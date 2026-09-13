@@ -206,7 +206,10 @@ Here is a human friendly list of them :
 | UnloadableModel                  | Fatal            | A fatal error has occured by building the links in the model                                                                                                                             |
 | MissingMandatoryFile             | Fatal            | Mandatory file missing                                                                                                                                                                   |
 | SubFolder                        | Error            | Files were in a subfolder, which is [explicitly forbidden by the specification](https://gtfs.org/schedule/reference/#file-requirements)                                                  |
-
+| DistanceBetweenParentAndChildTooHigh | Warning      | Distance between stops exceed a threshold provided by default                                                                                                                            |
+| PathwayModeNotCompatibleWithLevels| Error           | Pathway modes Elevator, Stairs and Escalator imply a change in levels. The check is applied when levels.txt is present                                                                   |
+|  PathwaySpanTooHigh              | Error           | This distance between two stops connected by the pathway exceed an user provided threshold                                                                                               |
+ 
 ### Geojson information
 
 When relevant for the check, geojson information is added for each check output,

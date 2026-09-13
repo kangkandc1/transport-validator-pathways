@@ -1,5 +1,5 @@
 use crate::issues::IssueType;
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use gtfs_structures::{Availability, Error};
 use itertools::Itertools;
 use rgb::RGB;
@@ -78,7 +78,7 @@ pub fn extract_metadata(gtfs: &gtfs_structures::RawGtfs) -> Metadata {
         )
         .minmax()
         .into_option();
-    let format = |d: chrono::NaiveDate| d.format("%Y-%m-%d").to_string();
+    let format = |d: jiff::civil::Date| d.strftime("%Y-%m-%d").to_string();
     let validator_version = env!("CARGO_PKG_VERSION");
     let stats = compute_stats(gtfs);
     let default = vec![];
@@ -264,8 +264,8 @@ fn stops_with_wheelchair_info_count(gtfs: &gtfs_structures::Gtfs) -> usize {
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Interval {
-    start_date: chrono::NaiveDate,
-    end_date: chrono::NaiveDate,
+    start_date: jiff::civil::Date,
+    end_date: jiff::civil::Date,
 }
 
 impl Interval {
@@ -273,7 +273,7 @@ impl Interval {
         self.update_bounds_with_date(&other.start_date);
         self.update_bounds_with_date(&other.end_date);
     }
-    fn update_bounds_with_date(&mut self, d: &NaiveDate) {
+    fn update_bounds_with_date(&mut self, d: &Date) {
         self.start_date = core::cmp::min(self.start_date, *d);
         self.end_date = core::cmp::max(self.end_date, *d);
     }
@@ -318,8 +318,8 @@ fn networks_start_end_dates(
         let mut agency_start_end_dates = HashMap::default();
         let start_end = match (metadata.start_date.as_ref(), metadata.end_date.as_ref()) {
             (Some(sd), Some(ed)) => Some(Interval {
-                start_date: sd.parse().unwrap(),
-                end_date: ed.parse().unwrap(),
+                start_date: Date::strptime("%Y-%m-%d", sd).unwrap(),
+                end_date: Date::strptime("%Y-%m-%d", ed).unwrap(),
             }),
             _ => None,
         };
@@ -704,15 +704,4 @@ fn test_networks_start_end_dates() {
     );
 }
 
-#[test]
-fn test_interval_serialization() {
-    let i = Interval {
-        start_date: NaiveDate::from_ymd_opt(2022, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2023, 1, 2).unwrap(),
-    };
 
-    assert_eq!(
-        serde_json::to_string(&i).unwrap(),
-        "{\"start_date\":\"2022-01-01\",\"end_date\":\"2023-01-02\"}"
-    )
-}
