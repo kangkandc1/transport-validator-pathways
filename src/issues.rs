@@ -103,6 +103,9 @@ pub enum IssueType {
     /// The GTFS is empty for both `calendar.txt` and `calendar_dates.txt`. The service
     /// is never running.
     NoCalendar,
+    /// Elevators, stairs and escalators necessarily connected stops points at different levels. Thus, the PathwayModes and the information about the
+    /// levels of the connected stops must be consistent.
+    PathwayModeNotCompatibleWithLevels
 }
 
 /// Represents an object related to another object that is causing an issue.
