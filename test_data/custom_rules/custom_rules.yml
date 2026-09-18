@@ -1,2 +1,3 @@
 max_bus_speed: 10
 max_gondola_speed: 100.5
+max_distance_spanned_by_pathway: 500.0

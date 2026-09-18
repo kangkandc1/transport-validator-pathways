@@ -105,7 +105,14 @@ pub enum IssueType {
     NoCalendar,
     /// Elevators, stairs and escalators necessarily connected stops points at different levels. Thus, the PathwayModes and the information about the
     /// levels of the connected stops must be consistent.
-    PathwayModeNotCompatibleWithLevels
+    PathwayModeNotCompatibleWithLevels,
+    /// Pathways should only connect stops belonging to the same station. Therefore, the parent_stop or the parent of the parent_stop (in case of boarding areas)
+    ///should point to the same station (location_type=1) 
+    PathwayIncompatibleAncestor,
+    /// A pathway is intended to connect stops that are within the same station. Thus, its very likely a sign of a problem if the connected stops lay over 1 km 
+    /// away from one another. The exact threshold is defined by the user with custom rules. If max_distance_spanned_by_pathway is not specified
+    /// the validation for this issue is not triggered
+    PathwayConnectingStopsTooFar
 }
 
 /// Represents an object related to another object that is causing an issue.

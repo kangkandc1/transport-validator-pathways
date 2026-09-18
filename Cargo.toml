@@ -26,7 +26,7 @@ env_logger = { version = "0.11", optional = true }
 anyhow = "1"
 futures = { version = "0.3", optional = true }
 geo = "0.33"
-gtfs-structures = { git = "https://github.com/kangkandc1/gtfs-structure_pathways", default-features = false }
+gtfs-structures = { version = "0.50.1"}
 # gtfs-structures = { version = "0.47.0", default-features = false }
 iso4217 = "0.3"
 isolang = "2.4"
@@ -42,6 +42,7 @@ actix-rt = { version = "2.11", optional = true }
 geojson = "1.0"
 rgb = "0.8"
 tikv-jemallocator = { version = "0.7", optional = true }
+rayon = "1.12.0"
 
 [dev-dependencies]
 tempfile = "3.27"

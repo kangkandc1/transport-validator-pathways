@@ -1237,8 +1237,9 @@ dependencies = [
 
 [[package]]
 name = "gtfs-structures"
-version = "0.50.0"
-source = "git+https://github.com/kangkandc1/gtfs-structure_pathways#fe459583d01a3fbc3eb2edb369b1edd9e5e9af99"
+version = "0.50.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95c0e383d0d856d15be5225905e5fef8b044cd3c8235071cb54cb1a2b7c0678d"
 dependencies = [
  "base16ct",
  "bytes",
@@ -3317,6 +3318,7 @@ dependencies = [
  "itertools",
  "jiff",
  "log",
+ "rayon",
  "rgb",
  "serde",
  "serde_json",
