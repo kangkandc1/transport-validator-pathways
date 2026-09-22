@@ -15,6 +15,10 @@ transport-validator is the tool used by the
 files. If you want to use it online, you can validate your own files at
 [this address](https://transport.data.gouv.fr/validation?locale=en).
 
+**This is a fork of the https://github.com/etalab/transport-validator. This fork eventually intends to become part of the original source.**
+This fork supplements the source repository by introducing validations for gtfs pathways, one aspect of the gtfs pathways thats notoriously hard to check.
+In doing so, this fork takes an somewhat opinionated approach. It will for example, isssue an warning, if the walkways implicitly connect stop points at two different levels. 
+
 ## Validation output
 
 Validation output is twofold:
@@ -214,6 +218,9 @@ Here is a human friendly list of them :
 | LockedPlatform                   | Error            |  A platform (stop with LocationType=0) is not reachable from any exit/entrance                                                                                                           |
 | TransitiveIncompabilityOfPathways | Warning         |  Incompatible pathway modes implied by two more more pair of pathways (see https://github.com/google/transit/issues/661)                                                                 |
  | InconsitentWheelchairAccessbility | Error          |  Wheelchair accessibilty label for the stop inconsistent with the information implied by pathways                                                                                        | 
+
+**Currently, only the NoCommonAncestor and PathwaySpanTooHigh are available . The other checks will be added one after another.**
+
 ### Geojson information
 
 When relevant for the check, geojson information is added for each check output,
@@ -366,6 +373,12 @@ dæmon support, saving on compile time and binary size:
 
 ```bash
 cargo run --release --no-default-features -- -i some_gtfs.zip
+```
+
+One example of validating a gtfs feed with invalid pathways can be run wtih 
+
+```bash
+cargo run -- --input test_data/pathways/pathways_multiple_issues --custom-rules test_data/custom_rules/custom_rules.yml
 ```
 
 ### Run as a dæmon
