@@ -6,7 +6,12 @@ use rayon::prelude::*;
 use geo::{Distance as _, Haversine, Point};
 use crate::custom_rules::{custom_rules, CustomRules};
 
-
+pub fn validate(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRules) -> Vec<Issue> {
+    validate_distance_spanned_by_pathway(gtfs,custom_rules)
+        .into_iter()
+        .chain(validate_ancestor_of_pathways(gtfs))
+        .collect()
+}
 
 fn validate_ancestor_of_pathways(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
     gtfs.stops
@@ -19,7 +24,7 @@ fn validate_ancestor_of_pathways(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
         .collect()
 }
 
-fn validate_distance_spanned_by_pathway(gtfs: &gtfs_structures::Gtfs,custom_rules: CustomRules) -> Vec<Issue> {
+fn validate_distance_spanned_by_pathway(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRules) -> Vec<Issue> {
 
     let Some(threshold) = custom_rules.max_distance_spanned_by_pathway else {
         return Vec::new();
@@ -478,7 +483,7 @@ fn test_validating_pathways_with_large_span_creates_issue(){
     let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathway_span_too_large").unwrap();
     let file_path = Some(String::from("test_data/custom_rules/custom_rules.yml"));
     let custom_rules = custom_rules(file_path);
-    let issues = validate_distance_spanned_by_pathway(&gtfs,custom_rules);
+    let issues = validate_distance_spanned_by_pathway(&gtfs,&custom_rules);
 
     println!("issues: {:?}", issues);
     assert!(issues.len()>0);
