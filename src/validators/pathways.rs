@@ -1,4 +1,4 @@
-use crate::{custom_rules, Issue, IssueType, Severity};
+use crate::{Issue, IssueType, Severity};
 use gtfs_structures::{Availability, LocationType, Pathway, PathwayDirectionType, PathwayMode, Stop};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,6 +10,8 @@ pub fn validate(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRules) -> Vec<
     validate_distance_spanned_by_pathway(gtfs,custom_rules)
         .into_iter()
         .chain(validate_ancestor_of_pathways(gtfs))
+        .into_iter()
+        .chain(validate_pathways_has_compatible_levels(gtfs))
         .collect()
 }
 
@@ -39,6 +41,17 @@ fn validate_distance_spanned_by_pathway(gtfs: &gtfs_structures::Gtfs,custom_rule
             pathway_spanning_distance_above_threshold(pathway, &gtfs.stops, threshold)
         })
         .map(|pathway| make_pathways_connecting_stops_too_far_issue(pathway, &threshold))
+        .collect()
+}
+
+fn validate_pathways_has_compatible_levels(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
+    gtfs.stops
+        .values()
+        .collect::<Vec<_>>()          // collect into Vec for par_iter
+        .par_iter()                    // parallel iterator over &Arc<Stop>
+        .flat_map_iter(|stop_arc| stop_arc.as_ref().pathways.iter())
+        .filter(|pathway| !pathway_has_compatible_levels(pathway, &gtfs.stops))
+        .map(make_pathway_doesnt_have_compatible_level_issue)
         .collect()
 }
 
@@ -72,6 +85,27 @@ fn pathway_spanning_distance_above_threshold(pathway: &Pathway,all_stops: &HashM
             stops_too_far(from_stop, to_stop, threshold)
         },
         _ => false,
+    }
+}
+
+pub fn pathway_has_compatible_levels(pathway:& Pathway,all_stops: &HashMap<String, Arc<Stop>>)->bool{
+
+    let from = all_stops.get(&pathway.from_stop_id).unwrap().as_ref();
+    let to = all_stops.get(&pathway.to_stop_id).unwrap().as_ref();
+
+    match (  &from.level_id, &to.level_id) {
+        (Some(_), Some(_)) => {
+            match pathway.mode {
+                PathwayMode::Elevator=> ! stops_at_same_level(from, to),
+                PathwayMode::Escalator=> ! stops_at_same_level(from, to),
+                PathwayMode::Stairs=> ! stops_at_same_level(from, to),
+                PathwayMode::MovingSidewalk =>  stops_at_same_level(from, to),
+                _ => true
+            }
+
+    }
+
+        _ => true
     }
 }
 
@@ -139,6 +173,18 @@ fn make_pathways_connecting_stops_too_far_issue(pathway: &gtfs_structures::Pathw
 
     base_issue.details(message.as_str())
 
+}
+
+
+fn make_pathway_doesnt_have_compatible_level_issue(pathway: &Pathway)->Issue {
+    let base_issue = Issue::new(Severity::Error, IssueType::PathwayModeNotCompatibleWithLevels, &pathway.id);
+    let mode = format!("Pathway mode is {:?}", pathway.mode);
+    let message = format!("the pathway with id {}   connects stops {} to stop {} is incompatible with mode {} ", pathway.id, pathway.from_stop_id, pathway.to_stop_id,mode);
+    base_issue.details(message.as_str())
+}
+
+fn stops_at_same_level(start: & Stop,end: & Stop )->bool{
+    start.level_id == end.level_id
 }
 
 #[test]
@@ -484,6 +530,17 @@ fn test_validating_pathways_with_large_span_creates_issue(){
     let file_path = Some(String::from("test_data/custom_rules/custom_rules.yml"));
     let custom_rules = custom_rules(file_path);
     let issues = validate_distance_spanned_by_pathway(&gtfs,&custom_rules);
+
+    println!("issues: {:?}", issues);
+    assert!(issues.len()>0);
+}
+
+#[test]
+fn test_validating_compatible_modes_creates_issue(){
+    let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
+    let file_path = Some(String::from("test_data/custom_rules/custom_rules.yml"));
+    let custom_rules = custom_rules(file_path);
+    let issues = validate_pathways_has_compatible_levels(&gtfs);
 
     println!("issues: {:?}", issues);
     assert!(issues.len()>0);
