@@ -78,6 +78,7 @@ fn validate_no_dangling_stops(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
 
 }
 
+
 fn pathway_connecting_stops_with_same_ancestor(
     pathway: &Pathway,
     all_stops: &HashMap<String, Arc<Stop>>,
@@ -247,6 +248,23 @@ fn get_unique_stations_connected_by_pathways(
     }
 
     by_station
+}
+
+fn get_platforms_with_boarding_areas(gtfs: &Gtfs) -> Vec<String> {
+    gtfs.stops
+        .values()
+        .collect::<Vec<_>>()
+        .par_iter()
+        .filter(|s| s.location_type == LocationType::BoardingArea)
+        .filter_map(|boarding_area| {
+            boarding_area.parent_station.clone()})
+        .collect()
+}
+
+fn pathway_connected_to_platform_with_boarding_areas(pathway: Pathway,platforms_with_boarding_areas :Vec<String>)->bool{
+    let from_id = pathway.from_stop_id;
+    let to_id = pathway.to_stop_id;
+    platforms_with_boarding_areas.contains(&from_id) || platforms_with_boarding_areas.contains(&to_id)
 }
 fn stops_too_far(stop_a: &gtfs_structures::Stop, stop_b: &gtfs_structures::Stop,threshold:f64) -> bool {
 
@@ -682,4 +700,12 @@ fn test_get_map_of_stations_with_dangling_stops(){
     let stations_with_dangling_stops = get_all_stops_in_connected_station_not_connected_by_pathways(&gtfs);
     assert_eq!(stations_with_dangling_stops.keys().len(),1);
     assert_eq!(stations_with_dangling_stops.get("station_A").unwrap().len(),1);
+}
+
+
+#[test]
+fn test_get_platforms_with_boarding_areas(){
+    let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
+    let platforms_with_boarding = get_platforms_with_boarding_areas(&gtfs);
+    assert_eq!(platforms_with_boarding.len(), 1);
 }

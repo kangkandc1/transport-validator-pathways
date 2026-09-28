@@ -16,3 +16,4 @@ station_B_concourse,Neumarkt — Concourse,40.938050,6.956330,3,station_B,level_
 station_B_elevator_top,Neumarkt — Elevator (street level),50.938080,6.956310,3,station_B,level_street_b,,1,Elevator top landing
 station_B_elevator_bottom,Neumarkt — Elevator (platform level),50.938080,6.956310,3,station_B,level_platform_b,,1,Elevator bottom landing
 platform_B1,Neumarkt — Bahnsteig U1,50.938050,6.956330,0,station_B,level_platform_b,U1,1,U1 platform — gap fillers available on request
+platform_B1_boarding,Neumarkt — Bahnsteig Zone A,50.938050,6.956330,4,platform_B1,level_platform_b,U1,1,U1 platform — gap fillers available on request
