@@ -9,6 +9,7 @@ station_A_stairs_top,Hauptbahnhof — Stairs top,50.943050,6.958250,3,station_A,
 station_A_stairs_bottom,Hauptbahnhof — Stairs bottom,50.943050,6.958250,3,station_A,level_platform,,2,Bottom of stairs
 platform_A1,Hauptbahnhof — Gleis 1,50.943040,6.958150,0,station_A,level_platform,1,1,Platform 1 — tactile guiding strips present
 platform_A2,Hauptbahnhof — Gleis 2,50.943040,6.958390,0,station_A,level_platform,2,2,Platform 2 — tactile guiding strips present
+platform_A3,Hauptbahnhof — Gleis 3,50.943040,6.958390,0,station_A,level_platform,2,2,Platform 3 — tactile guiding strips present
 station_B,Neumarkt,50.938050,6.956330,1,,,, ,City centre underground station
 station_B_entrance_1,Neumarkt — Eingang West,50.938200,6.956000,2,station_B,level_street_b,,1,Street-level west entrance with lift
 station_B_concourse,Neumarkt — Concourse,40.938050,6.956330,3,station_B,level_street_b,,1,Underground concourse

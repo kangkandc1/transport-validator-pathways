@@ -214,12 +214,12 @@ Here is a human friendly list of them :
 | PathwayModeNotCompatibleWithLevels| Error           | Pathway modes Elevator, Stairs and Escalator imply a change in levels. The check is applied when levels.txt is present                                                                   |
 |  PathwaySpanTooHigh              | Error            | This distance between two stops connected by the pathway exceed an user provided threshold                                                                                               |
 |  NoCommonAncestor                | Error            |  A pathway should only connect points that lie within the same station                                                                                                                   |
-| IslandStopPoint                   | Error           |  Pathways imply that a given stop is an island (not connected to any other stop point )                                                                                                  |
+| DanglingStop                   | Error           |  Pathways imply that a given stop is an island (not connected to any other stop point )                                                                                                  |
 | LockedPlatform                   | Error            |  A platform (stop with LocationType=0) is not reachable from any exit/entrance                                                                                                           |
 | TransitiveIncompabilityOfPathways | Warning         |  Incompatible pathway modes implied by two more more pair of pathways (see https://github.com/google/transit/issues/661)                                                                 |
  | InconsitentWheelchairAccessbility | Error          |  Wheelchair accessibilty label for the stop inconsistent with the information implied by pathways                                                                                        | 
 
-**Currently, only the NoCommonAncestor and PathwaySpanTooHigh are available . The other checks will be added one after another.**
+**Currently, only the NoCommonAncestor, DanglingStop and PathwaySpanTooHigh are available . The other checks will be added one after another.**
 
 ### Geojson information
 

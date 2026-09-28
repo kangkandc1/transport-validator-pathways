@@ -1,6 +1,7 @@
 use crate::{Issue, IssueType, Severity};
-use gtfs_structures::{Availability, LocationType, Pathway, PathwayDirectionType, PathwayMode, Stop};
-use std::collections::HashMap;
+use gtfs_structures::{Availability, Gtfs, LocationType, Pathway, PathwayDirectionType, PathwayMode, Stop};
+use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
 use std::sync::Arc;
 use rayon::prelude::*;
 use geo::{Distance as _, Haversine, Point};
@@ -12,6 +13,8 @@ pub fn validate(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRules) -> Vec<
         .chain(validate_ancestor_of_pathways(gtfs))
         .into_iter()
         .chain(validate_pathways_has_compatible_levels(gtfs))
+        .into_iter()
+        .chain(validate_no_dangling_stops(gtfs))
         .collect()
 }
 
@@ -53,6 +56,26 @@ fn validate_pathways_has_compatible_levels(gtfs: &gtfs_structures::Gtfs) -> Vec<
         .filter(|pathway| !pathway_has_compatible_levels(pathway, &gtfs.stops))
         .map(make_pathway_doesnt_have_compatible_level_issue)
         .collect()
+}
+
+fn validate_no_dangling_stops(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
+    let mut issues: Vec<Issue> = Vec::new();
+    let dangling_stops = get_all_stops_in_connected_station_not_connected_by_pathways(gtfs);
+    if dangling_stops.is_empty() {
+        return Vec::new();
+    }
+
+    for stop in dangling_stops {
+        let parent_stop = stop.0;
+        let dangling_stops = stop.1;
+        for dangling_stop in dangling_stops {
+            let new_dangling_issue = make_dangling_stop_issue(parent_stop.clone(),dangling_stop.id.clone());
+            issues.push(new_dangling_issue);
+        }
+    }
+
+    issues
+
 }
 
 fn pathway_connecting_stops_with_same_ancestor(
@@ -144,6 +167,87 @@ fn get_oldest_ancestor(
 }
 
 
+fn get_all_stops_in_connected_station_not_connected_by_pathways(
+    gtfs: &Gtfs,
+) -> HashMap<String, Vec<Arc<Stop>>> {
+    let connected_stations = get_unique_stations_connected_by_pathways(gtfs);
+    let stations_and_their_children = get_stations_and_their_children(gtfs);
+
+    let mut dangling_stops: HashMap<String, Vec<Arc<Stop>>> = HashMap::new();
+
+    for (station_id, connected_children) in &connected_stations {
+        let connected_ids: HashSet<&str> = connected_children
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
+
+        let Some(children) = stations_and_their_children.get(station_id) else {
+            continue;
+        };
+
+        let missing: Vec<Arc<Stop>> = children
+            .iter()
+            .filter(|s| s.location_type != LocationType::BoardingArea && !connected_ids.contains(s.id.as_str()))
+            .cloned()
+            .collect();
+
+        if !missing.is_empty() {
+            dangling_stops.insert(station_id.clone(), missing);
+        }
+    }
+
+
+    dangling_stops
+}
+
+fn get_stations_and_their_children(gtfs: &Gtfs) -> HashMap<String, Vec<Arc<Stop>>> {
+    let mut by_station: HashMap<String, Vec<Arc<Stop>>> = HashMap::new();
+    for stop in gtfs.stops.values() {
+        if stop.location_type == LocationType::StopArea {
+            continue;
+        }
+        let Some(station) = get_oldest_ancestor(stop, &gtfs.stops) else {
+            continue;
+        };
+        by_station
+            .entry(station.id.clone())
+            .or_default()
+            .push(stop.clone());
+    }
+    by_station
+}
+
+fn get_unique_stations_connected_by_pathways(
+    gtfs: &Gtfs,
+) -> HashMap<String, Vec<Arc<Stop>>> {
+    // Every stop id that is either endpoint of any pathway.
+    let connected_ids: HashSet<&str> = gtfs
+        .stops
+        .values()
+        .flat_map(|s| s.pathways.iter())
+        .flat_map(|p| [p.from_stop_id.as_str(), p.to_stop_id.as_str()])
+        .collect();
+
+    let mut by_station: HashMap<String, Vec<Arc<Stop>>> = HashMap::new();
+
+    for stop in gtfs.stops.values() {
+        if !connected_ids.contains(stop.id.as_str()) {
+            continue;
+        }
+        let Some(station) = get_oldest_ancestor(stop, &gtfs.stops) else {
+            continue;
+        };
+        let entry = by_station
+            .entry(station.id.clone())
+            .or_default();
+        // A stop may appear as an endpoint of multiple pathways, so guard against duplicates.
+        if !entry.iter().any(|s| s.id == stop.id) {
+            entry.push(stop.clone());
+        }
+    }
+
+    by_station
+}
 fn stops_too_far(stop_a: &gtfs_structures::Stop, stop_b: &gtfs_structures::Stop,threshold:f64) -> bool {
 
     match (
@@ -180,6 +284,12 @@ fn make_pathway_doesnt_have_compatible_level_issue(pathway: &Pathway)->Issue {
     let base_issue = Issue::new(Severity::Error, IssueType::PathwayModeNotCompatibleWithLevels, &pathway.id);
     let mode = format!("Pathway mode is {:?}", pathway.mode);
     let message = format!("the pathway with id {}   connects stops {} to stop {} is incompatible with mode {} ", pathway.id, pathway.from_stop_id, pathway.to_stop_id,mode);
+    base_issue.details(message.as_str())
+}
+
+fn make_dangling_stop_issue(parent_stop_id:String,dangling_stop_id:String)->Issue {
+    let base_issue = Issue::new(Severity::Error,IssueType::DanglingStop,&dangling_stop_id);
+    let message = format!("Station with id {} has a dangling stop with id {}", parent_stop_id, dangling_stop_id);
     base_issue.details(message.as_str())
 }
 
@@ -544,4 +654,32 @@ fn test_validating_compatible_modes_creates_issue(){
 
     println!("issues: {:?}", issues);
     assert!(issues.len()>0);
+
+}
+#[test]
+fn test_extraction_of_unique_stations_connected_by_pathways(){
+    let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
+    let unique_stations = get_unique_stations_connected_by_pathways(&gtfs);
+    assert_eq!(unique_stations.keys().len(),2);
+
+
+}
+
+#[test]
+fn test_get_stations_and_their_children(){
+
+    let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
+    let unique_stations = get_unique_stations_connected_by_pathways(&gtfs);
+    let station_children_map = get_stations_and_their_children(&gtfs);
+    assert_eq!(station_children_map.keys().len(),2);
+    assert_eq!(station_children_map.get("station_A").unwrap().len(),10);
+    assert_eq!(station_children_map.get("station_B").unwrap().len(),5);
+}
+
+#[test]
+fn test_get_map_of_stations_with_dangling_stops(){
+    let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
+    let stations_with_dangling_stops = get_all_stops_in_connected_station_not_connected_by_pathways(&gtfs);
+    assert_eq!(stations_with_dangling_stops.keys().len(),1);
+    assert_eq!(stations_with_dangling_stops.get("station_A").unwrap().len(),1);
 }
