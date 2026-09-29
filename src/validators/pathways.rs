@@ -3,6 +3,7 @@ use gtfs_structures::{Availability, Gtfs, LocationType, Pathway, PathwayDirectio
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::Arc;
+use clap::builder::Str;
 use rayon::prelude::*;
 use geo::{Distance as _, Haversine, Point};
 use crate::custom_rules::{custom_rules, CustomRules};
@@ -15,6 +16,8 @@ pub fn validate(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRules) -> Vec<
         .chain(validate_pathways_has_compatible_levels(gtfs))
         .into_iter()
         .chain(validate_no_dangling_stops(gtfs))
+        .into_iter()
+        .chain(validate_pathway_doesnt_touch_plaftforms_with_boarding_areas(gtfs))
         .collect()
 }
 
@@ -76,6 +79,30 @@ fn validate_no_dangling_stops(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
 
     issues
 
+}
+
+fn validate_pathway_doesnt_touch_plaftforms_with_boarding_areas(
+    gtfs: &gtfs_structures::Gtfs,
+) -> Vec<Issue> {
+    let mut issues: Vec<Issue> = Vec::new();
+    let platforms_with_boarding_areas = get_platforms_with_boarding_areas(gtfs);
+
+    gtfs.stops
+        .values()
+        .collect::<Vec<_>>()
+        .par_iter()
+        .flat_map_iter(|stop_arc| stop_arc.as_ref().pathways.iter())
+        .filter_map(|pathway| {
+            pathway_connected_to_platform_with_boarding_areas(
+                pathway,
+                &platforms_with_boarding_areas,   // note the & — signature takes a reference
+            )
+                .map(|reason| (pathway, reason))      // Some((pathway, reason)) or None
+        })
+        .map(|(pathway, reason)| {
+            make_pathway_to_platform_with_boarding_areas_issue(pathway, reason)
+        })
+        .collect()
 }
 
 
@@ -261,10 +288,18 @@ fn get_platforms_with_boarding_areas(gtfs: &Gtfs) -> Vec<String> {
         .collect()
 }
 
-fn pathway_connected_to_platform_with_boarding_areas(pathway: Pathway,platforms_with_boarding_areas :Vec<String>)->bool{
-    let from_id = pathway.from_stop_id;
-    let to_id = pathway.to_stop_id;
-    platforms_with_boarding_areas.contains(&from_id) || platforms_with_boarding_areas.contains(&to_id)
+fn pathway_connected_to_platform_with_boarding_areas(pathway: &Pathway,platforms_with_boarding_areas :&Vec<String>)->Option<String> {
+    let from_id = pathway.clone().from_stop_id;
+    let to_id = pathway.clone().to_stop_id;
+    let is_from_id_invalid = platforms_with_boarding_areas.contains(&from_id);
+    let is_to_id_invalid = platforms_with_boarding_areas.contains(&to_id);
+    if(is_from_id_invalid){
+         return Some(from_id.clone());
+    };
+    if(is_to_id_invalid){
+        return Some(to_id.clone());
+    };
+    None
 }
 fn stops_too_far(stop_a: &gtfs_structures::Stop, stop_b: &gtfs_structures::Stop,threshold:f64) -> bool {
 
@@ -308,6 +343,12 @@ fn make_pathway_doesnt_have_compatible_level_issue(pathway: &Pathway)->Issue {
 fn make_dangling_stop_issue(parent_stop_id:String,dangling_stop_id:String)->Issue {
     let base_issue = Issue::new(Severity::Error,IssueType::DanglingStop,&dangling_stop_id);
     let message = format!("Station with id {} has a dangling stop with id {}", parent_stop_id, dangling_stop_id);
+    base_issue.details(message.as_str())
+}
+
+fn make_pathway_to_platform_with_boarding_areas_issue(pathway: &gtfs_structures::Pathway,problem_station_id:String)->Issue {
+    let base_issue= Issue::new(Severity::Error,IssueType::PathwayToPlatformWithBoardingAreas,&problem_station_id);
+    let message = format!("pathway with id {} is connected to location with id {} that contains boarding areas",pathway.id, problem_station_id);
     base_issue.details(message.as_str())
 }
 
@@ -708,4 +749,11 @@ fn test_get_platforms_with_boarding_areas(){
     let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
     let platforms_with_boarding = get_platforms_with_boarding_areas(&gtfs);
     assert_eq!(platforms_with_boarding.len(), 1);
+}
+
+#[test]
+fn test_validation_for_pathways_toouching_stations_with_boarding_ares(){
+    let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
+    let issues_with_boarding_areas = validate_pathway_doesnt_touch_plaftforms_with_boarding_areas(&gtfs);
+    assert_eq!(issues_with_boarding_areas.len(), 1);
 }

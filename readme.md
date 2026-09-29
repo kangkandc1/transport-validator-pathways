@@ -218,8 +218,8 @@ Here is a human friendly list of them :
 | LockedPlatform                   | Error            |  A platform (stop with LocationType=0) is not reachable from any exit/entrance                                                                                                           |
 | TransitiveIncompabilityOfPathways | Warning         |  Incompatible pathway modes implied by two more more pair of pathways (see https://github.com/google/transit/issues/661)                                                                 |
  | InconsitentWheelchairAccessbility | Error          |  Wheelchair accessibilty label for the stop inconsistent with the information implied by pathways                                                                                        | 
-
-**Currently, only the NoCommonAncestor, DanglingStop and PathwaySpanTooHigh are available . The other checks will be added one after another.**
+|PathwayToPlatformWithBoardingAreas | Error | A pathway is connecting stops which have boarding areas |
+**Currently, only the NoCommonAncestor, DanglingStop, PathwayToPlatformWithBoardingAreas and PathwaySpanTooHigh are available . The other checks will be added one after another.**
 
 ### Geojson information
 

@@ -116,7 +116,9 @@ pub enum IssueType {
     /// If any location inside a station is connected by a pathway, then every location inside the station must be connected by some pathway, except for the following
     /// two cases: Case 1: Location is a boarding area Case 2: he stop (location_type=0 or empty) is explicitly marked with stops.stop_access=1,
     /// in which case it is assumed to be directly accessible from the street network.
-    DanglingStop
+    DanglingStop,
+    /// According to the spec, a platform (location_type=0) should not be connected to any pathway if it has boarding_areas (location_type=4)
+    PathwayToPlatformWithBoardingAreas,
 }
 
 /// Represents an object related to another object that is causing an issue.
