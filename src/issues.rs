@@ -119,6 +119,8 @@ pub enum IssueType {
     DanglingStop,
     /// According to the spec, a platform (location_type=0) should not be connected to any pathway if it has boarding_areas (location_type=4)
     PathwayToPlatformWithBoardingAreas,
+    /// Every platform (location_code =0) and boarding_area (location_code=4) inside a station with pathways should be reachable from atleast one exit/entrance (location_type=2)
+    LockedPlatform
 }
 
 /// Represents an object related to another object that is causing an issue.

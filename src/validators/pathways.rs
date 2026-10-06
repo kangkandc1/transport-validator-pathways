@@ -1,12 +1,90 @@
 use crate::{Issue, IssueType, Severity};
-use gtfs_structures::{Availability, Gtfs, LocationType, Pathway, PathwayDirectionType, PathwayMode, Stop};
+use gtfs_structures::{Availability, Gtfs, Id, LocationType, Pathway, PathwayDirectionType, PathwayMode, Stop};
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
 use clap::builder::Str;
 use rayon::prelude::*;
 use geo::{Distance as _, Haversine, Point};
 use crate::custom_rules::{custom_rules, CustomRules};
+
+pub struct PathwayDirectedGraph{
+    adjacent_nodes: HashMap<String,Vec<String>>
+
+}
+
+impl PathwayDirectedGraph {
+
+    pub fn new() -> Self {
+        PathwayDirectedGraph{adjacent_nodes: HashMap::new()}
+    }
+    pub fn add_stop(&mut self, stop: &Stop) {
+        // Ensure the stop exists as a node even if it has no pathways.
+        let outgoing = self.adjacent_nodes.entry(stop.id.clone()).or_default();
+        outgoing.extend(stop.pathways.iter().map(|p| p.to_stop_id.clone()));
+
+        // Add the reverse edge for bidirectional pathways.
+        for pathway in &stop.pathways {
+            if matches!(pathway.is_bidirectional, PathwayDirectionType::Bidirectional) {
+                self.adjacent_nodes
+                    .entry(pathway.to_stop_id.clone())
+                    .or_default()
+                    .push(stop.id.clone());
+            }
+        }
+    }
+
+
+
+    pub fn is_reachable(&self, from: &str, to: &str) -> bool {
+        // A node is trivially reachable from itself, provided it exists.
+        // Note: `to` is deliberately not checked for membership, because
+        // targets of unidirectional pathways may not be keys yet.
+        if from == to {
+            return self.adjacent_nodes.contains_key(from);
+        }
+
+        let mut visited: HashSet<&str> = HashSet::from([from]);
+        let mut stack: Vec<&str> = vec![from];
+
+        while let Some(current) = stack.pop() {
+            let Some(neighbors) = self.adjacent_nodes.get(current) else {
+                continue; // dangling node with no outgoing edges
+            };
+
+            for neighbor in neighbors {
+                let neighbor = neighbor.as_str();
+                if neighbor == to {
+                    return true;
+                }
+                if visited.insert(neighbor) {
+                    stack.push(neighbor);
+                }
+            }
+        }
+
+        false
+    }
+
+}
+
+impl fmt::Display for PathwayDirectedGraph {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut keys: Vec<&String> = self.adjacent_nodes.keys().collect();
+        keys.sort();
+
+        for key in keys {
+            let neighbours = &self.adjacent_nodes[key];
+            if neighbours.is_empty() {
+                writeln!(f, "{key} (no outgoing pathways)")?;
+            } else {
+                writeln!(f, "{key} -> {}", neighbours.join(", "))?;
+            }
+        }
+        Ok(())
+    }
+}
 
 pub fn validate(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRules) -> Vec<Issue> {
     validate_distance_spanned_by_pathway(gtfs,custom_rules)
@@ -18,6 +96,8 @@ pub fn validate(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRules) -> Vec<
         .chain(validate_no_dangling_stops(gtfs))
         .into_iter()
         .chain(validate_pathway_doesnt_touch_plaftforms_with_boarding_areas(gtfs))
+        .into_iter()
+        .chain(validate_no_locked_platforms(gtfs))
         .collect()
 }
 
@@ -74,6 +154,26 @@ fn validate_no_dangling_stops(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
         for dangling_stop in dangling_stops {
             let new_dangling_issue = make_dangling_stop_issue(parent_stop.clone(),dangling_stop.id.clone());
             issues.push(new_dangling_issue);
+        }
+    }
+
+    issues
+
+}
+
+fn validate_no_locked_platforms(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
+    let mut issues: Vec<Issue> = Vec::new();
+    let locked = get_all_island_stops_in_connected_station_not_connected_by_pathways(gtfs);
+    if locked.is_empty() {
+        return Vec::new();
+    }
+
+    for stop in locked {
+        let parent_stop = stop.0;
+        let dangling_stops = stop.1;
+        for dangling_stop in dangling_stops {
+            let new_locked_platform_issue = make_locked_platform_issue(parent_stop.clone(), dangling_stop.id.clone());
+            issues.push(new_locked_platform_issue);
         }
     }
 
@@ -228,6 +328,74 @@ fn get_all_stops_in_connected_station_not_connected_by_pathways(
     dangling_stops
 }
 
+fn   get_all_island_stops_in_connected_station_not_connected_by_pathways(
+    gtfs: &Gtfs,
+) -> HashMap<String, Vec<Arc<Stop>>> {
+    let connected_stations = get_unique_stations_connected_by_pathways(gtfs);
+    let stations_and_their_children = get_stations_and_their_children(gtfs);
+
+    let mut island_stops: HashMap<String, Vec<Arc<Stop>>> = HashMap::new();
+
+    for (station_id, connected_children) in &connected_stations {
+        let connected_ids: HashSet<&str> = connected_children
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
+
+        let Some(children) = stations_and_their_children.get(station_id) else {
+            continue;
+        };
+
+        let platforms_entrances_of_station = get_platforms_and_boarding_areas_and_entrances_for_station(children);
+        let mut graph_of_station = PathwayDirectedGraph::new();
+        for child in children {
+            graph_of_station.add_stop(&child);
+        }
+
+
+
+        let platforms = platforms_entrances_of_station.0;
+        let entries = platforms_entrances_of_station.1;
+
+
+
+        let islands: Vec<Arc<Stop>> = children
+            .iter()
+            .filter(|s| is_a_platform(s))
+            .filter(|s| !stop_reachable_from_at_least_one_entrance(s,&entries,&graph_of_station))
+            .cloned()
+            .collect();
+
+        if !islands.is_empty() {
+            island_stops.insert(station_id.clone(), islands);
+        }
+    }
+
+
+    island_stops
+}
+
+fn is_a_platform(stop:&Stop) -> bool {
+    stop.location_type == LocationType::StopPoint || stop.location_type == LocationType::BoardingArea
+}
+fn stop_reachable_from_at_least_one_entrance(stop:&Stop,entrances: &Vec<Arc<Stop>>,graph:&PathwayDirectedGraph)-> bool {
+    let mut is_reachable= false;
+    for entrance in entrances {
+        let is_reachable_from_entrance = graph.is_reachable(&*entrance.id, &*stop.id);
+        if is_reachable_from_entrance {
+            is_reachable = true;
+            break
+        }
+    }
+    is_reachable
+}
+
+fn get_platforms_and_boarding_areas_and_entrances_for_station(children:&Vec<Arc<Stop>>) -> (Vec<Arc<Stop>>,Vec<Arc<Stop>>) {
+ let platforms_and_boarding_areas= children.iter().filter(|s| s.location_type == LocationType::BoardingArea || s.location_type==LocationType::StopPoint).cloned().collect();
+ let entrances = children.iter().filter(|s| s.location_type == LocationType::StationEntrance).cloned().collect();
+ (platforms_and_boarding_areas, entrances)
+}
+
 fn get_stations_and_their_children(gtfs: &Gtfs) -> HashMap<String, Vec<Arc<Stop>>> {
     let mut by_station: HashMap<String, Vec<Arc<Stop>>> = HashMap::new();
     for stop in gtfs.stops.values() {
@@ -343,6 +511,12 @@ fn make_pathway_doesnt_have_compatible_level_issue(pathway: &Pathway)->Issue {
 fn make_dangling_stop_issue(parent_stop_id:String,dangling_stop_id:String)->Issue {
     let base_issue = Issue::new(Severity::Error,IssueType::DanglingStop,&dangling_stop_id);
     let message = format!("Station with id {} has a dangling stop with id {}", parent_stop_id, dangling_stop_id);
+    base_issue.details(message.as_str())
+}
+
+fn make_locked_platform_issue(parent_stop_id:String,locked_stop_id:String)->Issue {
+    let base_issue = Issue::new(Severity::Error,IssueType::LockedPlatform,&locked_stop_id);
+    let message = format!("Station with id {} has a dangling stop with id {}", parent_stop_id, locked_stop_id);
     base_issue.details(message.as_str())
 }
 
@@ -734,6 +908,20 @@ fn test_get_stations_and_their_children(){
     assert_eq!(station_children_map.get("station_A").unwrap().len(),10);
     assert_eq!(station_children_map.get("station_B").unwrap().len(),5);
 }
+#[test]
+fn test_get_platforms_boarding_areas_entrances(){
+    let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
+    let unique_stations = get_unique_stations_connected_by_pathways(&gtfs);
+    let station_children_map = get_stations_and_their_children(&gtfs);
+
+    let children_of_station_a = station_children_map.get("station_A").unwrap();
+
+    let platforms_entrances_of_station_a = get_platforms_and_boarding_areas_and_entrances_for_station(children_of_station_a);
+
+    let exits_entrances_station_a = platforms_entrances_of_station_a.1;
+
+    assert_eq!(exits_entrances_station_a.len(), 2);
+}
 
 #[test]
 fn test_get_map_of_stations_with_dangling_stops(){
@@ -741,6 +929,16 @@ fn test_get_map_of_stations_with_dangling_stops(){
     let stations_with_dangling_stops = get_all_stops_in_connected_station_not_connected_by_pathways(&gtfs);
     assert_eq!(stations_with_dangling_stops.keys().len(),1);
     assert_eq!(stations_with_dangling_stops.get("station_A").unwrap().len(),1);
+}
+
+#[test]
+fn test_get_map_of_stations_with_locked_platforms(){
+    let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
+    let stations_with_island_stops = get_all_island_stops_in_connected_station_not_connected_by_pathways(&gtfs);
+    assert_eq!(stations_with_island_stops.keys().len(), 2);
+    assert_eq!(stations_with_island_stops.get("station_A").unwrap().len(), 1);
+    assert_eq!(stations_with_island_stops.get("station_B").unwrap().len(), 1);
+    println!("{:?}", stations_with_island_stops);
 }
 
 
@@ -756,4 +954,18 @@ fn test_validation_for_pathways_toouching_stations_with_boarding_ares(){
     let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
     let issues_with_boarding_areas = validate_pathway_doesnt_touch_plaftforms_with_boarding_areas(&gtfs);
     assert_eq!(issues_with_boarding_areas.len(), 1);
+}
+#[test]
+fn test_creation_of_directed_graph(){
+    let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
+
+    let mut graph = PathwayDirectedGraph::new();
+    for stop in gtfs.stops.values() {
+        graph.add_stop(&stop);
+    }
+
+    let reachable = graph.is_reachable("station_B_concourse","station_A_entrance_1");
+
+    assert!(reachable);
+    println!("{}", graph);
 }
