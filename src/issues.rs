@@ -120,7 +120,9 @@ pub enum IssueType {
     /// According to the spec, a platform (location_type=0) should not be connected to any pathway if it has boarding_areas (location_type=4)
     PathwayToPlatformWithBoardingAreas,
     /// Every platform (location_code =0) and boarding_area (location_code=4) inside a station with pathways should be reachable from atleast one exit/entrance (location_type=2)
-    LockedPlatform
+    LockedPlatform,
+    /// If a location is labelled as Wheelchair accessible and pathways are available for the Station, it should be accessible from at least one entrance/exit without requiring usage of stairs or escalators
+    WheelchairBoardingLabelInconsistentWithPathways,
 }
 
 /// Represents an object related to another object that is causing an issue.

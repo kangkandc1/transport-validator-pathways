@@ -7,6 +7,7 @@ station_A_elevator_top,Hauptbahnhof — Elevator (street level),50.943060,6.9582
 station_A_elevator_bottom,Hauptbahnhof — Elevator (platform level),50.943060,6.958230,3,station_A,level_platform,,1,Elevator landing at platform level
 station_A_stairs_top,Hauptbahnhof — Stairs top,50.943050,6.958250,3,station_A,level_street,,2,Top of stairs — no step-free access
 station_A_stairs_bottom,Hauptbahnhof — Stairs bottom,50.943050,6.958250,3,station_A,level_platform,,2,Bottom of stairs
+station_A_cafe,Hauptbahnhof — cafe,50.943050,6.958250,3,station_A,level_street,,1,cafe
 platform_A1,Hauptbahnhof — Gleis 1,50.943040,6.958150,0,station_A,level_platform,1,1,Platform 1 — tactile guiding strips present
 platform_A2,Hauptbahnhof — Gleis 2,50.943040,6.958390,0,station_A,level_platform,2,2,Platform 2 — tactile guiding strips present
 platform_A3,Hauptbahnhof — Gleis 3,50.943040,6.958390,0,station_A,level_platform,2,2,Platform 3 — tactile guiding strips present

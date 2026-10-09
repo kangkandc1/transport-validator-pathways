@@ -10,19 +10,23 @@ use geo::{Distance as _, Haversine, Point};
 use crate::custom_rules::{custom_rules, CustomRules};
 
 pub struct PathwayDirectedGraph{
-    adjacent_nodes: HashMap<String,Vec<String>>
+    adjacent_nodes: HashMap<String,Vec<String>>,
+    adjacent_nodes_wheelchair_accessible : HashMap<String,Vec<String>>
 
 }
 
 impl PathwayDirectedGraph {
 
     pub fn new() -> Self {
-        PathwayDirectedGraph{adjacent_nodes: HashMap::new()}
+        PathwayDirectedGraph{adjacent_nodes: HashMap::new(), adjacent_nodes_wheelchair_accessible: Default::default() }
     }
     pub fn add_stop(&mut self, stop: &Stop) {
         // Ensure the stop exists as a node even if it has no pathways.
         let outgoing = self.adjacent_nodes.entry(stop.id.clone()).or_default();
+        let outgoing_stepless = self.adjacent_nodes_wheelchair_accessible.entry(stop.id.clone()).or_default();
         outgoing.extend(stop.pathways.iter().map(|p| p.to_stop_id.clone()));
+        outgoing_stepless.extend(stop.pathways.iter().filter(|p| Self::is_pathway_accessible_by_wheelchair(p)).map(|p| p.to_stop_id.clone()));
+
 
         // Add the reverse edge for bidirectional pathways.
         for pathway in &stop.pathways {
@@ -31,6 +35,13 @@ impl PathwayDirectedGraph {
                     .entry(pathway.to_stop_id.clone())
                     .or_default()
                     .push(stop.id.clone());
+
+                if Self::is_pathway_accessible_by_wheelchair(&pathway) {
+                    self.adjacent_nodes_wheelchair_accessible
+                        .entry(pathway.to_stop_id.clone())
+                        .or_default()
+                        .push(stop.id.clone());
+                }
             }
         }
     }
@@ -67,19 +78,64 @@ impl PathwayDirectedGraph {
         false
     }
 
+    pub fn is_reachable_by_wheelchair(&self, from: &str, to: &str) -> bool {
+        // A node is trivially reachable from itself, provided it exists.
+        // Note: `to` is deliberately not checked for membership, because
+        // targets of unidirectional pathways may not be keys yet.
+        if from == to {
+            return self.adjacent_nodes_wheelchair_accessible.contains_key(from);
+        }
+
+        let mut visited: HashSet<&str> = HashSet::from([from]);
+        let mut stack: Vec<&str> = vec![from];
+
+        while let Some(current) = stack.pop() {
+            let Some(neighbors) = self.adjacent_nodes_wheelchair_accessible.get(current) else {
+                continue; // dangling node with no outgoing edges
+            };
+
+            for neighbor in neighbors {
+                let neighbor = neighbor.as_str();
+                if neighbor == to {
+                    return true;
+                }
+                if visited.insert(neighbor) {
+                    stack.push(neighbor);
+                }
+            }
+        }
+
+        false
+    }
+
+    fn is_pathway_accessible_by_wheelchair(pathway: &Pathway) -> bool {
+        matches!(
+            pathway.mode,
+            PathwayMode::Walkway | PathwayMode::Elevator | PathwayMode::MovingSidewalk
+        )
+    }
+
 }
 
 impl fmt::Display for PathwayDirectedGraph {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut keys: Vec<&String> = self.adjacent_nodes.keys().collect();
+        let mut keys_stepless: Vec<&String> = self.adjacent_nodes_wheelchair_accessible.keys().collect();
         keys.sort();
+        keys_stepless.sort();
 
         for key in keys {
             let neighbours = &self.adjacent_nodes[key];
+            let neighbours_stepless = &self.adjacent_nodes_wheelchair_accessible[key];
             if neighbours.is_empty() {
                 writeln!(f, "{key} (no outgoing pathways)")?;
             } else {
                 writeln!(f, "{key} -> {}", neighbours.join(", "))?;
+            }
+            if(neighbours_stepless.is_empty()) {
+                writeln!(f, "{key} (no stepless outgoing pathways)")?;
+            } else {
+                writeln!(f, "{key} stepless -> {}", neighbours_stepless.join(", "))?;
             }
         }
         Ok(())
@@ -98,6 +154,8 @@ pub fn validate(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRules) -> Vec<
         .chain(validate_pathway_doesnt_touch_plaftforms_with_boarding_areas(gtfs))
         .into_iter()
         .chain(validate_no_locked_platforms(gtfs))
+        .into_iter()
+        .chain(validate_stops_have_correct_wheelchair_accessibility_labels(gtfs))
         .collect()
 }
 
@@ -163,17 +221,37 @@ fn validate_no_dangling_stops(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
 
 fn validate_no_locked_platforms(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
     let mut issues: Vec<Issue> = Vec::new();
-    let locked = get_all_island_stops_in_connected_station_not_connected_by_pathways(gtfs);
+    let locked = get_all_island_stops_in_connected_station(gtfs);
     if locked.is_empty() {
         return Vec::new();
     }
 
     for stop in locked {
         let parent_stop = stop.0;
-        let dangling_stops = stop.1;
-        for dangling_stop in dangling_stops {
-            let new_locked_platform_issue = make_locked_platform_issue(parent_stop.clone(), dangling_stop.id.clone());
+        let locked_children = stop.1;
+        for child in locked_children {
+            let new_locked_platform_issue = make_locked_platform_issue(parent_stop.clone(), child.id.clone());
             issues.push(new_locked_platform_issue);
+        }
+    }
+
+    issues
+
+}
+
+fn validate_stops_have_correct_wheelchair_accessibility_labels(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
+    let mut issues: Vec<Issue> = Vec::new();
+    let mislabeled_stops = get_all_falsely_accessible_labelled__stops_in_connected_station(&gtfs);
+    if mislabeled_stops.is_empty() {
+        return Vec::new();
+    };
+
+    for stop in mislabeled_stops {
+        let parent_stop = stop.0;
+        let mislabeld_children  = stop.1;
+        for mislabeled_stop in mislabeld_children {
+            let mislabeled_stop_issue = make_falsely_labelled_wheelchair_accessible_issue(parent_stop.clone(), mislabeled_stop.id.clone());
+            issues.push(mislabeled_stop_issue);
         }
     }
 
@@ -328,7 +406,7 @@ fn get_all_stops_in_connected_station_not_connected_by_pathways(
     dangling_stops
 }
 
-fn   get_all_island_stops_in_connected_station_not_connected_by_pathways(
+fn get_all_island_stops_in_connected_station(
     gtfs: &Gtfs,
 ) -> HashMap<String, Vec<Arc<Stop>>> {
     let connected_stations = get_unique_stations_connected_by_pathways(gtfs);
@@ -337,10 +415,6 @@ fn   get_all_island_stops_in_connected_station_not_connected_by_pathways(
     let mut island_stops: HashMap<String, Vec<Arc<Stop>>> = HashMap::new();
 
     for (station_id, connected_children) in &connected_stations {
-        let connected_ids: HashSet<&str> = connected_children
-            .iter()
-            .map(|s| s.id.as_str())
-            .collect();
 
         let Some(children) = stations_and_their_children.get(station_id) else {
             continue;
@@ -352,9 +426,6 @@ fn   get_all_island_stops_in_connected_station_not_connected_by_pathways(
             graph_of_station.add_stop(&child);
         }
 
-
-
-        let platforms = platforms_entrances_of_station.0;
         let entries = platforms_entrances_of_station.1;
 
 
@@ -375,6 +446,47 @@ fn   get_all_island_stops_in_connected_station_not_connected_by_pathways(
     island_stops
 }
 
+fn get_all_falsely_accessible_labelled__stops_in_connected_station(
+    gtfs: &Gtfs,
+) -> HashMap<String, Vec<Arc<Stop>>> {
+    let connected_stations = get_unique_stations_connected_by_pathways(gtfs);
+    let stations_and_their_children = get_stations_and_their_children(gtfs);
+
+    let mut falsely_labelled_stops: HashMap<String, Vec<Arc<Stop>>> = HashMap::new();
+
+    for (station_id, connected_children) in &connected_stations {
+
+        let Some(children) = stations_and_their_children.get(station_id) else {
+            continue;
+        };
+
+        let platforms_entrances_of_station = get_platforms_and_boarding_areas_and_entrances_for_station(children);
+        let mut graph_of_station = PathwayDirectedGraph::new();
+        for child in children {
+            graph_of_station.add_stop(&child);
+        }
+
+        let entries = platforms_entrances_of_station.1;
+
+
+
+        let false_labelled: Vec<Arc<Stop>> = children
+            .iter()
+            .filter(|s| is_a_platform(s))
+            .filter(|s| s.wheelchair_boarding == Availability::Available)
+            .filter(|s| !stop_reachable_from_al_least_one_entrance_for_wheelchair_users(s, &entries, &graph_of_station))
+            .cloned()
+            .collect();
+
+        if !false_labelled.is_empty() {
+            falsely_labelled_stops.insert(station_id.clone(), false_labelled);
+        }
+    }
+
+
+    falsely_labelled_stops
+}
+
 fn is_a_platform(stop:&Stop) -> bool {
     stop.location_type == LocationType::StopPoint || stop.location_type == LocationType::BoardingArea
 }
@@ -382,6 +494,18 @@ fn stop_reachable_from_at_least_one_entrance(stop:&Stop,entrances: &Vec<Arc<Stop
     let mut is_reachable= false;
     for entrance in entrances {
         let is_reachable_from_entrance = graph.is_reachable(&*entrance.id, &*stop.id);
+        if is_reachable_from_entrance {
+            is_reachable = true;
+            break
+        }
+    }
+    is_reachable
+}
+
+fn stop_reachable_from_al_least_one_entrance_for_wheelchair_users(stop:&Stop,entrances: &Vec<Arc<Stop>>,graph:&PathwayDirectedGraph)->bool{
+    let mut is_reachable= false;
+    for entrance in entrances {
+        let is_reachable_from_entrance = graph.is_reachable_by_wheelchair(&*entrance.id, &*stop.id);
         if is_reachable_from_entrance {
             is_reachable = true;
             break
@@ -517,6 +641,12 @@ fn make_dangling_stop_issue(parent_stop_id:String,dangling_stop_id:String)->Issu
 fn make_locked_platform_issue(parent_stop_id:String,locked_stop_id:String)->Issue {
     let base_issue = Issue::new(Severity::Error,IssueType::LockedPlatform,&locked_stop_id);
     let message = format!("Station with id {} has a dangling stop with id {}", parent_stop_id, locked_stop_id);
+    base_issue.details(message.as_str())
+}
+
+fn make_falsely_labelled_wheelchair_accessible_issue(parent_stop_id:String, mislabelled_stop_id:String) ->Issue {
+    let base_issue = Issue::new(Severity::Warning,IssueType::WheelchairBoardingLabelInconsistentWithPathways,&mislabelled_stop_id);
+    let message = format!("Station with id {} has inconsistent wheelchair availability labelling for  stop with id {}", parent_stop_id, mislabelled_stop_id);
     base_issue.details(message.as_str())
 }
 
@@ -934,7 +1064,7 @@ fn test_get_map_of_stations_with_dangling_stops(){
 #[test]
 fn test_get_map_of_stations_with_locked_platforms(){
     let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
-    let stations_with_island_stops = get_all_island_stops_in_connected_station_not_connected_by_pathways(&gtfs);
+    let stations_with_island_stops = get_all_island_stops_in_connected_station(&gtfs);
     assert_eq!(stations_with_island_stops.keys().len(), 2);
     assert_eq!(stations_with_island_stops.get("station_A").unwrap().len(), 1);
     assert_eq!(stations_with_island_stops.get("station_B").unwrap().len(), 1);
@@ -968,4 +1098,14 @@ fn test_creation_of_directed_graph(){
 
     assert!(reachable);
     println!("{}", graph);
+}
+
+#[test]
+fn test_get_falsely_labelled_accessible_stops(){
+    let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
+
+    let falsely_labelled = get_all_falsely_accessible_labelled__stops_in_connected_station(&gtfs);
+    assert_eq!(falsely_labelled.keys().len(), 1);
+
+
 }
