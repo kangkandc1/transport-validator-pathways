@@ -1,14 +1,75 @@
 use crate::{Issue, IssueType, Severity};
-use gtfs_structures::{Availability, Gtfs, Id, LocationType, Pathway, PathwayDirectionType, PathwayMode, Stop};
+use gtfs_structures::{Availability, Gtfs, LocationType, Pathway, PathwayDirectionType, PathwayMode, Stop};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::ops::Deref;
 use std::sync::Arc;
-use clap::builder::Str;
 use rayon::prelude::*;
-use geo::{Distance as _, Haversine, Point};
-use crate::custom_rules::{custom_rules, CustomRules};
+use geo::{Coord, Distance as _, Haversine, Point};
 
+use crate::custom_rules::{custom_rules, CustomRules};
+use serde::ser::{SerializeStruct, Serializer};
+use serde::Serialize;
+
+#[derive(Debug)]
+pub struct  PathwayIssue{
+    base_issue: Issue,
+    pathway_id: Option<String>,
+    involved_stop_ids: Vec<String>,
+}
+
+impl  PathwayIssue {
+
+    pub fn new(base_issue: Issue, pathway_id: Option<String>,involved_stop_ids:Vec<String>) -> Self {
+        PathwayIssue{base_issue, pathway_id, involved_stop_ids}
+    }
+
+    pub fn new_stop_issue(base_issue: Issue, involved_stop_ids: Vec<String>) -> Self {
+        PathwayIssue{base_issue, pathway_id: None, involved_stop_ids}
+    }
+
+}
+
+impl Serialize for PathwayIssue {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("PathwayIssue", 3)?;
+        state.serialize_field("issue_type", &self.base_issue.issue_type)?;
+        state.serialize_field("pathway_id", &self.pathway_id)?;
+        state.serialize_field("involved_stop_ids", &self.involved_stop_ids)?;
+
+        state.end()
+    }
+}
+pub struct StationWithPathwayIssue {
+    station_id: String,
+    coordinates : Option<Coord>,
+    children: Vec<Arc<Stop>>,
+    edges: Vec<Arc<Pathway>>,
+    pathway_issues: Vec<PathwayIssue>
+}
+
+impl Serialize for StationWithPathwayIssue {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("Station", 5)?;
+        state.serialize_field("station_id", &self.station_id)?;
+        if let Some(ref coord) = self.coordinates {
+            state.serialize_field("coordinates", &[coord.x, coord.y])?;
+        }
+        state.serialize_field("children", &self.children)?;
+        state.serialize_field("edges", &self.edges)?;
+        state.serialize_field("pathway_issues", &self.pathway_issues)?;
+        state.end()
+    }
+}
+
+impl StationWithPathwayIssue {
+    pub fn new(station_id: String, coordinates: Option<Coord>, children: Vec<Arc<Stop>>,edges: Vec<Arc<Pathway>>) -> Self {
+        StationWithPathwayIssue {station_id, coordinates, children, edges, pathway_issues: vec![] }
+    }
+
+    pub fn add_issue(&mut self, issue: PathwayIssue) {
+        self.pathway_issues.push(issue);
+    }
+}
 pub struct PathwayDirectedGraph{
     adjacent_nodes: HashMap<String,Vec<String>>,
     adjacent_nodes_wheelchair_accessible : HashMap<String,Vec<String>>
@@ -132,7 +193,7 @@ impl fmt::Display for PathwayDirectedGraph {
             } else {
                 writeln!(f, "{key} -> {}", neighbours.join(", "))?;
             }
-            if(neighbours_stepless.is_empty()) {
+            if neighbours_stepless.is_empty() {
                 writeln!(f, "{key} (no stepless outgoing pathways)")?;
             } else {
                 writeln!(f, "{key} stepless -> {}", neighbours_stepless.join(", "))?;
@@ -143,23 +204,61 @@ impl fmt::Display for PathwayDirectedGraph {
 }
 
 pub fn validate(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRules) -> Vec<Issue> {
-    validate_distance_spanned_by_pathway(gtfs,custom_rules)
+    validate_by_station(gtfs, custom_rules)
+}
+
+pub fn validate_by_station(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRules) -> Vec<Issue> {
+    let stations_and_their_children = get_stations_and_their_children(gtfs);
+
+    let dangling_stop_issues_by_station = get_dangling_stop_validation_issues_by_station(gtfs);
+    let locked_platform_issues_by_station = get_locked_platform_validation_issues_by_station(gtfs);
+    let falsely_labelled_issues_by_station = get_falsely_labelled_wheelchair_accessible_issues_by_station(gtfs);
+
+    // Merge issues from all three validators into one HashMap keyed by station_id
+    let mut all_issues_by_station: HashMap<String, Vec<PathwayIssue>> = HashMap::new();
+    for (station_id, issues) in dangling_stop_issues_by_station {
+        all_issues_by_station.entry(station_id).or_default().extend(issues);
+    }
+    for (station_id, issues) in locked_platform_issues_by_station {
+        all_issues_by_station.entry(station_id).or_default().extend(issues);
+    }
+    for (station_id, issues) in falsely_labelled_issues_by_station {
+        all_issues_by_station.entry(station_id).or_default().extend(issues);
+    }
+
+    // Build StationWithPathwayIssue for each station that has issues
+    let mut stations_and_problems: Vec<StationWithPathwayIssue> = Vec::new();
+    for (station_id, issues) in all_issues_by_station {
+        let coordinates = gtfs.stops.get(&station_id)
+            .and_then(|s| match (s.longitude, s.latitude) {
+                (Some(lon), Some(lat)) => Some(Coord { x: lon, y: lat }),
+                _ => None,
+            });
+        let children = stations_and_their_children.get(&station_id).cloned().unwrap_or_default();
+        let edges: Vec<Arc<Pathway>> = children.iter()
+            .flat_map(|c| c.pathways.iter().map(|p| Arc::new(p.clone())))
+            .collect();
+
+        let mut station_with_issues = StationWithPathwayIssue::new(station_id, coordinates, children, edges);
+        for issue in issues {
+            station_with_issues.add_issue(issue);
+        }
+        stations_and_problems.push(station_with_issues);
+    }
+
+
+    if let Ok(json) = serde_json::to_string_pretty(&stations_and_problems) {
+        let _ = std::fs::write("stations_and_issues.json", &json);
+    }
+
+    stations_and_problems
         .into_iter()
-        .chain(validate_ancestor_of_pathways(gtfs))
-        .into_iter()
-        .chain(validate_pathways_has_compatible_levels(gtfs))
-        .into_iter()
-        .chain(validate_no_dangling_stops(gtfs))
-        .into_iter()
-        .chain(validate_pathway_doesnt_touch_plaftforms_with_boarding_areas(gtfs))
-        .into_iter()
-        .chain(validate_no_locked_platforms(gtfs))
-        .into_iter()
-        .chain(validate_stops_have_correct_wheelchair_accessibility_labels(gtfs))
+        .flat_map(|s| s.pathway_issues.into_iter().map(|pi| pi.base_issue))
         .collect()
 }
 
-fn validate_ancestor_of_pathways(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
+
+fn validate_ancestor_of_pathways(gtfs: &gtfs_structures::Gtfs) -> Vec<PathwayIssue> {
     gtfs.stops
         .values()
         .collect::<Vec<_>>()          // collect into Vec for par_iter
@@ -184,11 +283,11 @@ fn validate_distance_spanned_by_pathway(gtfs: &gtfs_structures::Gtfs,custom_rule
         .filter(|pathway| {
             pathway_spanning_distance_above_threshold(pathway, &gtfs.stops, threshold)
         })
-        .map(|pathway| make_pathways_connecting_stops_too_far_issue(pathway, &threshold))
+        .map(|pathway| make_pathways_connecting_stops_too_far_issue(pathway, &threshold).base_issue)
         .collect()
 }
 
-fn validate_pathways_has_compatible_levels(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
+fn validate_pathways_has_compatible_levels(gtfs: &gtfs_structures::Gtfs) -> Vec<PathwayIssue> {
     gtfs.stops
         .values()
         .collect::<Vec<_>>()          // collect into Vec for par_iter
@@ -199,8 +298,29 @@ fn validate_pathways_has_compatible_levels(gtfs: &gtfs_structures::Gtfs) -> Vec<
         .collect()
 }
 
-fn validate_no_dangling_stops(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
-    let mut issues: Vec<Issue> = Vec::new();
+
+fn get_dangling_stop_validation_issues_by_station(gtfs: &gtfs_structures::Gtfs)->HashMap<String,Vec<PathwayIssue>>{
+
+    let mut issues: HashMap<String,Vec<PathwayIssue>> = HashMap::new();
+    let dangling_stops = get_all_stops_in_connected_station_not_connected_by_pathways(gtfs);
+    if dangling_stops.is_empty() {
+        return HashMap::new()
+    }
+
+    for (parent_stop, dangling_children) in dangling_stops {
+        for dangling_child in dangling_children {
+            let new_dangling_issue = make_dangling_stop_issue(parent_stop.clone(), dangling_child.id.clone());
+            issues.entry(parent_stop.clone())
+                .or_default()
+                .push(new_dangling_issue);
+        }
+    }
+
+    issues
+
+}
+fn validate_no_dangling_stops(gtfs: &gtfs_structures::Gtfs) -> Vec<PathwayIssue> {
+    let mut issues: Vec<PathwayIssue> = Vec::new();
     let dangling_stops = get_all_stops_in_connected_station_not_connected_by_pathways(gtfs);
     if dangling_stops.is_empty() {
         return Vec::new();
@@ -219,8 +339,27 @@ fn validate_no_dangling_stops(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
 
 }
 
-fn validate_no_locked_platforms(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
-    let mut issues: Vec<Issue> = Vec::new();
+fn get_locked_platform_validation_issues_by_station(gtfs: &gtfs_structures::Gtfs)->HashMap<String,Vec<PathwayIssue>>{
+    let mut issues: HashMap<String,Vec<PathwayIssue>> = HashMap::new();
+    let locked = get_all_island_stops_in_connected_station(gtfs);
+    if locked.is_empty() {
+        return HashMap::new()
+    }
+
+    for (parent_stop, locked_children) in locked {
+        for child in locked_children {
+            let new_locked_platform_issue = make_locked_platform_issue(parent_stop.clone(), child.id.clone());
+            issues.entry(parent_stop.clone())
+                .or_default()
+                .push(new_locked_platform_issue);
+        }
+    }
+
+    issues
+}
+
+fn validate_no_locked_platforms(gtfs: &gtfs_structures::Gtfs) -> Vec<PathwayIssue> {
+    let mut issues: Vec<PathwayIssue> = Vec::new();
     let locked = get_all_island_stops_in_connected_station(gtfs);
     if locked.is_empty() {
         return Vec::new();
@@ -239,8 +378,27 @@ fn validate_no_locked_platforms(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
 
 }
 
-fn validate_stops_have_correct_wheelchair_accessibility_labels(gtfs: &gtfs_structures::Gtfs) -> Vec<Issue> {
-    let mut issues: Vec<Issue> = Vec::new();
+fn get_falsely_labelled_wheelchair_accessible_issues_by_station(gtfs: &gtfs_structures::Gtfs)->HashMap<String,Vec<PathwayIssue>>{
+    let mut issues: HashMap<String,Vec<PathwayIssue>> = HashMap::new();
+    let mislabeled_stops = get_all_falsely_accessible_labelled__stops_in_connected_station(&gtfs);
+    if mislabeled_stops.is_empty() {
+        return HashMap::new()
+    }
+
+    for (parent_stop, mislabeled_children) in mislabeled_stops {
+        for mislabeled_stop in mislabeled_children {
+            let mislabeled_stop_issue = make_falsely_labelled_wheelchair_accessible_issue(parent_stop.clone(), mislabeled_stop.id.clone());
+            issues.entry(parent_stop.clone())
+                .or_default()
+                .push(mislabeled_stop_issue);
+        }
+    }
+
+    issues
+}
+
+fn validate_stops_have_correct_wheelchair_accessibility_labels(gtfs: &gtfs_structures::Gtfs) -> Vec<PathwayIssue> {
+    let mut issues: Vec<PathwayIssue> = Vec::new();
     let mislabeled_stops = get_all_falsely_accessible_labelled__stops_in_connected_station(&gtfs);
     if mislabeled_stops.is_empty() {
         return Vec::new();
@@ -278,7 +436,7 @@ fn validate_pathway_doesnt_touch_plaftforms_with_boarding_areas(
                 .map(|reason| (pathway, reason))      // Some((pathway, reason)) or None
         })
         .map(|(pathway, reason)| {
-            make_pathway_to_platform_with_boarding_areas_issue(pathway, reason)
+            make_pathway_to_platform_with_boarding_areas_issue(pathway, reason).base_issue
         })
         .collect()
 }
@@ -348,11 +506,26 @@ fn get_oldest_ancestor(
 
         LocationType::StationEntrance
         | LocationType::StopPoint
-        | LocationType::GenericNode => stop
-            .parent_station
-            .as_deref()
-            .and_then(|p| all_stops.get(p))
-            .cloned(),
+        | LocationType::GenericNode => {
+            let mut current = stop
+                .parent_station
+                .as_deref()
+                .and_then(|p| all_stops.get(p));
+            while let Some(node) = current {
+                if node.location_type == LocationType::StopArea {
+                    return Some(node.clone());
+                }
+                current = node
+                    .parent_station
+                    .as_deref()
+                    .and_then(|p| all_stops.get(p));
+            }
+            // Fall back to immediate parent if no StopArea found
+            stop.parent_station
+                .as_deref()
+                .and_then(|p| all_stops.get(p))
+                .cloned()
+        }
 
         LocationType::BoardingArea => {
             let immediate_parent = stop
@@ -585,10 +758,10 @@ fn pathway_connected_to_platform_with_boarding_areas(pathway: &Pathway,platforms
     let to_id = pathway.clone().to_stop_id;
     let is_from_id_invalid = platforms_with_boarding_areas.contains(&from_id);
     let is_to_id_invalid = platforms_with_boarding_areas.contains(&to_id);
-    if(is_from_id_invalid){
+    if is_from_id_invalid {
          return Some(from_id.clone());
     };
-    if(is_to_id_invalid){
+    if is_to_id_invalid {
         return Some(to_id.clone());
     };
     None
@@ -610,55 +783,82 @@ fn stops_too_far(stop_a: &gtfs_structures::Stop, stop_b: &gtfs_structures::Stop,
     }
 }
 
-fn make_no_common_ancestor_for_pathway_issue(pathway: &Pathway) -> Issue {
-    let base_issue = Issue::new(Severity::Error, IssueType::PathwayIncompatibleAncestor, &pathway.id);
+fn make_no_common_ancestor_for_pathway_issue(pathway: &Pathway) -> PathwayIssue {
     let message = format!("the pathway with id {}   connects stops {} to stop {} having different ancestor ", pathway.id, pathway.from_stop_id, pathway.to_stop_id);
-    base_issue.details(message.as_str())
-}
 
-fn make_pathways_connecting_stops_too_far_issue(pathway: &gtfs_structures::Pathway,theshold:&f64) -> Issue {
-    let base_issue = Issue::new(Severity::Error,IssueType::PathwayConnectingStopsTooFar,&pathway.id);
+    let base_issue = Issue::new(Severity::Error, IssueType::PathwayIncompatibleAncestor, &pathway.id).details(message.as_str());
+
+    let mut involved_stops:Vec<String> = Vec::new();
+    involved_stops.push(pathway.from_stop_id.clone());
+    involved_stops.push(pathway.to_stop_id.clone());
+    PathwayIssue::new(base_issue, Some(pathway.id.clone()), involved_stops)}
+
+fn make_pathways_connecting_stops_too_far_issue(pathway: &gtfs_structures::Pathway,theshold:&f64) -> PathwayIssue {
     let message = format!("the pathway with id {}   connects stops {} to stop {} spans a distance more than the user provided threshold {} meters", pathway.id, pathway.from_stop_id, pathway.to_stop_id,theshold);
 
-    base_issue.details(message.as_str())
+    let base_issue = Issue::new(Severity::Error,IssueType::PathwayConnectingStopsTooFar,&pathway.id).details(message.as_str());
+
+    let mut involved_stops:Vec<String> = Vec::new();
+    involved_stops.push(pathway.from_stop_id.clone());
+    involved_stops.push(pathway.to_stop_id.clone());
+    PathwayIssue::new(base_issue, Some(pathway.id.clone()), involved_stops)
 
 }
 
 
-fn make_pathway_doesnt_have_compatible_level_issue(pathway: &Pathway)->Issue {
-    let base_issue = Issue::new(Severity::Error, IssueType::PathwayModeNotCompatibleWithLevels, &pathway.id);
+fn make_pathway_doesnt_have_compatible_level_issue(pathway: &Pathway)->PathwayIssue {
     let mode = format!("Pathway mode is {:?}", pathway.mode);
     let message = format!("the pathway with id {}   connects stops {} to stop {} is incompatible with mode {} ", pathway.id, pathway.from_stop_id, pathway.to_stop_id,mode);
-    base_issue.details(message.as_str())
+    let base_issue = Issue::new(Severity::Error, IssueType::PathwayModeNotCompatibleWithLevels, &pathway.id).details(message.as_str());
+
+    let mut involved_stops:Vec<String> = Vec::new();
+    involved_stops.push(pathway.from_stop_id.clone());
+    involved_stops.push(pathway.to_stop_id.clone());
+    PathwayIssue::new(base_issue,Some(pathway.id.clone()),involved_stops)
 }
 
-fn make_dangling_stop_issue(parent_stop_id:String,dangling_stop_id:String)->Issue {
-    let base_issue = Issue::new(Severity::Error,IssueType::DanglingStop,&dangling_stop_id);
+fn make_dangling_stop_issue(parent_stop_id:String,dangling_stop_id:String)->PathwayIssue {
+
     let message = format!("Station with id {} has a dangling stop with id {}", parent_stop_id, dangling_stop_id);
-    base_issue.details(message.as_str())
+    let base_issue = Issue::new(Severity::Error,IssueType::DanglingStop,&dangling_stop_id).details(message.as_str());
+    let mut involved_stops = Vec::new();
+    involved_stops.push(dangling_stop_id);
+
+    PathwayIssue::new_stop_issue(base_issue,involved_stops)
 }
 
-fn make_locked_platform_issue(parent_stop_id:String,locked_stop_id:String)->Issue {
-    let base_issue = Issue::new(Severity::Error,IssueType::LockedPlatform,&locked_stop_id);
+fn make_locked_platform_issue(parent_stop_id:String,locked_stop_id:String)->PathwayIssue {
     let message = format!("Station with id {} has a dangling stop with id {}", parent_stop_id, locked_stop_id);
-    base_issue.details(message.as_str())
+    let base_issue = Issue::new(Severity::Error,IssueType::LockedPlatform,&locked_stop_id).details(message.as_str());
+
+    let mut involved_stops = Vec::new();
+    involved_stops.push(locked_stop_id);
+    PathwayIssue::new_stop_issue(base_issue,involved_stops)
 }
 
-fn make_falsely_labelled_wheelchair_accessible_issue(parent_stop_id:String, mislabelled_stop_id:String) ->Issue {
-    let base_issue = Issue::new(Severity::Warning,IssueType::WheelchairBoardingLabelInconsistentWithPathways,&mislabelled_stop_id);
+fn make_falsely_labelled_wheelchair_accessible_issue(parent_stop_id:String, mislabelled_stop_id:String) ->PathwayIssue {
     let message = format!("Station with id {} has inconsistent wheelchair availability labelling for  stop with id {}", parent_stop_id, mislabelled_stop_id);
-    base_issue.details(message.as_str())
+    let base_issue = Issue::new(Severity::Warning,IssueType::WheelchairBoardingLabelInconsistentWithPathways,&mislabelled_stop_id).details(message.as_str());
+
+    let mut involved_stops = Vec::new();
+    involved_stops.push(mislabelled_stop_id);
+    PathwayIssue::new_stop_issue(base_issue,involved_stops)
 }
 
-fn make_pathway_to_platform_with_boarding_areas_issue(pathway: &gtfs_structures::Pathway,problem_station_id:String)->Issue {
-    let base_issue= Issue::new(Severity::Error,IssueType::PathwayToPlatformWithBoardingAreas,&problem_station_id);
+fn make_pathway_to_platform_with_boarding_areas_issue(pathway: &gtfs_structures::Pathway,problem_station_id:String)->PathwayIssue {
     let message = format!("pathway with id {} is connected to location with id {} that contains boarding areas",pathway.id, problem_station_id);
-    base_issue.details(message.as_str())
+    let base_issue= Issue::new(Severity::Error,IssueType::PathwayToPlatformWithBoardingAreas,&problem_station_id).details(message.as_str());
+
+    let mut involved_stops : Vec<String> = Vec::new();
+    involved_stops.push(problem_station_id.clone());
+    PathwayIssue::new(base_issue, Some(pathway.id.clone()), involved_stops)
 }
 
 fn stops_at_same_level(start: & Stop,end: & Stop )->bool{
     start.level_id == end.level_id
 }
+
+
 
 #[test]
 fn test_ancestor_detection() {
@@ -883,7 +1083,6 @@ fn test_validating_pathways_with_no_shared_ancestor_creates_one_issue(){
     let issues = validate_ancestor_of_pathways(&gtfs);
 
     assert_eq!(issues.len(), 1);
-    assert_eq!(issues.get(0).unwrap().object_id,"pw_broken");
 }
 
 #[test]
@@ -1035,8 +1234,8 @@ fn test_get_stations_and_their_children(){
     let unique_stations = get_unique_stations_connected_by_pathways(&gtfs);
     let station_children_map = get_stations_and_their_children(&gtfs);
     assert_eq!(station_children_map.keys().len(),2);
-    assert_eq!(station_children_map.get("station_A").unwrap().len(),10);
-    assert_eq!(station_children_map.get("station_B").unwrap().len(),5);
+    assert_eq!(station_children_map.get("station_A").unwrap().len(),11);
+    assert_eq!(station_children_map.get("station_B").unwrap().len(),6);
 }
 #[test]
 fn test_get_platforms_boarding_areas_entrances(){

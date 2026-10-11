@@ -18,3 +18,4 @@ pub mod sub_folder;
 pub mod unusable_trip;
 pub mod unused_stop;
 pub mod pathways;
+pub mod visualization_utilities;
