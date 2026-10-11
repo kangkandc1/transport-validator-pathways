@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Station Pathway Issues Visualizer</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
+    <link href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet" />
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; height: 100vh; display: flex; flex-direction: column; }
@@ -25,7 +26,9 @@
         .no-issues { color: #95a5a6; text-align: center; padding: 20px; font-style: italic; }
         #map-container { flex: 1; position: relative; }
         #map { width: 100%; height: 100%; }
-        .legend { background: white; padding: 10px; border-radius: 4px; box-shadow: 0 1px 5px rgba(0,0,0,0.2); }
+        #map .maplibregl-popup { max-width: 300px !important; }
+        #map .maplibregl-popup-content { font-size: 12px; line-height: 1.4; }
+        .custom-legend { position: absolute; bottom: 30px; right: 10px; z-index: 1000; background: white; padding: 10px; border-radius: 4px; box-shadow: 0 1px 5px rgba(0,0,0,0.2); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
         .legend-item { display: flex; align-items: center; gap: 6px; margin: 4px 0; font-size: 12px; }
         .legend-color { width: 16px; height: 16px; border-radius: 50%; border: 2px solid #333; }
         .error-banner { background: #e74c3c; color: white; padding: 12px 20px; text-align: center; flex-shrink: 0; }
@@ -46,15 +49,28 @@
         </div>
         <div id="map-container">
             <div id="map"></div>
+            <div class="custom-legend" id="legend">
+                <strong>Location Types</strong>
+                <div class="legend-item"><div class="legend-color" style="background:#3498db"></div> Platform</div>
+                <div class="legend-item"><div class="legend-color" style="background:#2ecc71"></div> Entrance/Exit</div>
+                <div class="legend-item"><div class="legend-color" style="background:#e67e22"></div> Node</div>
+                <div class="legend-item"><div class="legend-color" style="background:#e74c3c"></div> Boarding Area</div>
+                <div class="legend-item"><div class="legend-color" style="background:#9b59b6"></div> Exit</div>
+                <hr style="margin:6px 0">
+                <strong>Pathway Modes</strong>
+                <div class="legend-item">—— Walkway / Fare Gate</div>
+                <div class="legend-item" style="color:#8e44ad">⬡ Elevator</div>
+                <div class="legend-item" style="text-decoration-style:dashed">- - Stairs / Escalator</div>
+            </div>
         </div>
     </div>
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
         // --- Configuration ---
+        const STYLE_URL = 'https://tiles.mobidata-bw.de/styles/railway/style.json';
         const LOCATION_TYPE_COLORS = {
             '0': '#3498db', // platform — blue
-            '1': '#95a5a6', // station — grey (unlikely as child)
+            '1': '#95a5a6', // station — grey
             '2': '#2ecc71', // entrance — green
             '3': '#e67e22', // node/generic — orange
             '4': '#e74c3c', // boarding area — red
@@ -77,25 +93,24 @@
             '6': 'Fare Gate',
             '7': 'Exit Gate'
         };
-        const PATHWAY_MODE_DASH = {
-            '2': '8,4',
-            '4': '4,6',
-            '5': '2,6'
-        };
-        const PATHWAY_MODE_COLOR = {
-            '2': '#e74c3c', // stairs — thick red
-            '4': '#e74c3c', // escalator — thick red
-            '5': '#8e44ad'  // elevator gets a distinct color
-        };
 
         let currentStation = null;
         let allStations = [];
-        let map, markersGroup, edgesGroup, highlightGroup;
+        let map;
         let markersById = {};
-        let edgesById = {};
-        let stopEdgesMap = {}; // stopId → [edge entries from edgesById]
+        let edgesData = [];
+        let stopEdgesMap = {}; // stopId → [edge_id, ...]
         let activeIssue = null;
-        let activeStopId = null; // currently "selected" stop for pathway filtering
+        let activeStopId = null;
+        let preventMapClick = false;
+        let hoverPopup = null;
+
+        // Base filters for edge layers (used to restore after stop filtering)
+        const BASE_EDGE_FILTERS = {
+            'edges-regular': ['!', ['in', ['get', 'mode'], ['literal', ['2', '4', '5']]]],
+            'edges-stairs': ['in', ['get', 'mode'], ['literal', ['2', '4']]],
+            'edges-elevator': ['==', ['get', 'mode'], '5']
+        };
 
         // --- Load data ---
         async function loadData() {
@@ -122,45 +137,178 @@
 
         // --- Map initialization ---
         function initMap() {
-            map = L.map('map').setView([50, 7], 6);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '&copy; OpenStreetMap contributors',
-                maxZoom: 18
-            }).addTo(map);
+            map = new maplibregl.Map({
+                container: 'map',
+                style: STYLE_URL,
+                center: [7, 50],
+                zoom: 6
+            });
 
-            markersGroup = L.layerGroup().addTo(map);
-            edgesGroup = L.layerGroup().addTo(map);
-            highlightGroup = L.layerGroup().addTo(map);
+            map.on('load', () => {
+                // Add empty sources
+                map.addSource('stops', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+                map.addSource('edges', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+                map.addSource('highlights', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
 
-            addLegend();
+                // Stops layer — circle markers colored by location_type
+                map.addLayer({
+                    id: 'stops',
+                    type: 'circle',
+                    source: 'stops',
+                    paint: {
+                        'circle-radius': [
+                            'match', ['get', 'location_type'],
+                            '0', 8,
+                            6
+                        ],
+                        'circle-color': ['get', 'color'],
+                        'circle-stroke-color': '#2c3e50',
+                        'circle-stroke-width': 2,
+                        'circle-stroke-opacity': 1,
+                        'circle-opacity': 0.85
+                    }
+                });
 
-            // Map click outside any marker → show all edges again
+                // Regular pathways (solid, dark, thin)
+                map.addLayer({
+                    id: 'edges-regular',
+                    type: 'line',
+                    source: 'edges',
+                    filter: ['!', ['in', ['get', 'mode'], ['literal', ['2', '4', '5']]]],
+                    paint: {
+                        'line-color': '#2c3e50',
+                        'line-width': 2,
+                        'line-opacity': 0.6
+                    }
+                });
+
+                // Stairs/escalator (dashed, red, thick)
+                map.addLayer({
+                    id: 'edges-stairs',
+                    type: 'line',
+                    source: 'edges',
+                    filter: ['in', ['get', 'mode'], ['literal', ['2', '4']]],
+                    paint: {
+                        'line-color': '#e74c3c',
+                        'line-width': 5,
+                        'line-opacity': 0.85,
+                        'line-dasharray': [8, 4]
+                    }
+                });
+
+                // Elevator (dashed, purple)
+                map.addLayer({
+                    id: 'edges-elevator',
+                    type: 'line',
+                    source: 'edges',
+                    filter: ['==', ['get', 'mode'], '5'],
+                    paint: {
+                        'line-color': '#8e44ad',
+                        'line-width': 3,
+                        'line-opacity': 0.85,
+                        'line-dasharray': [2, 6]
+                    }
+                });
+
+                // Highlights — stop rings
+                map.addLayer({
+                    id: 'highlights-stops',
+                    type: 'circle',
+                    source: 'highlights',
+                    filter: ['==', ['get', 'type'], 'stop'],
+                    paint: {
+                        'circle-radius': ['get', 'radius'],
+                        'circle-color': 'transparent',
+                        'circle-stroke-color': '#e74c3c',
+                        'circle-stroke-width': 3,
+                        'circle-stroke-opacity': 0.9
+                    }
+                });
+
+                // Highlights — pathway lines
+                map.addLayer({
+                    id: 'highlights-edges',
+                    type: 'line',
+                    source: 'highlights',
+                    filter: ['==', ['get', 'type'], 'edge'],
+                    paint: {
+                        'line-color': '#e74c3c',
+                        'line-width': 5,
+                        'line-opacity': 0.9
+                    }
+                });
+
+                // Hover popup (reused across all layers)
+                hoverPopup = new maplibregl.Popup({
+                    closeButton: false,
+                    closeOnClick: false,
+                    offset: [0, -10]
+                });
+
+                // --- Marker hover: show tooltip ---
+                map.on('mouseenter', 'stops', (e) => {
+                    map.getCanvas().style.cursor = 'pointer';
+                    const props = e.features[0].properties;
+                    let html = `<b>${props.stop_id}</b><br>${props.stop_name}<br>${props.location_type_label}`;
+                    if (props.platform_code) html += ` · Code: ${props.platform_code}`;
+                    hoverPopup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+                });
+                map.on('mouseleave', 'stops', () => {
+                    map.getCanvas().style.cursor = '';
+                    hoverPopup.remove();
+                });
+
+                // --- Marker click: select / deselect stop, filter edges ---
+                map.on('click', 'stops', (e) => {
+                    preventMapClick = true;
+                    const props = e.features[0].properties;
+                    if (activeStopId === props.stop_id) {
+                        // Deselect
+                        activeStopId = null;
+                        showAllEdges();
+                    } else {
+                        activeStopId = props.stop_id;
+                        filterEdgesToStop(props.stop_id);
+                        // Zoom to this marker
+                        map.easeTo({ center: e.lngLat, zoom: 17 });
+                    }
+                });
+
+                // --- Edge hover: show tooltip ---
+                const edgeLayers = ['edges-regular', 'edges-stairs', 'edges-elevator'];
+                edgeLayers.forEach(layerId => {
+                    map.on('mouseenter', layerId, (e) => {
+                        map.getCanvas().style.cursor = 'pointer';
+                        const props = e.features[0].properties;
+                        let html = `<b>${props.edge_id}</b><br>${props.mode_label}`;
+                        if (props.length) html += `<br>Length: ${props.length}m`;
+                        if (props.traversal_time) html += `<br>Time: ${props.traversal_time}s`;
+                        if (props.signposted_as) html += `<br>→ ${props.signposted_as}`;
+                        hoverPopup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+                    });
+                    map.on('mouseleave', layerId, () => {
+                        map.getCanvas().style.cursor = '';
+                        hoverPopup.remove();
+                    });
+                });
+
+                // If a station was already selected when the map finished loading, render it
+                if (currentStation) {
+                    renderStation();
+                }
+            });
+
+            // Map click outside any marker → deselect stop (show all edges)
             map.on('click', () => {
+                if (preventMapClick) {
+                    preventMapClick = false;
+                    return;
+                }
                 if (activeStopId !== null) {
                     activeStopId = null;
                     showAllEdges();
                 }
             });
-        }
-
-        function addLegend() {
-            const legend = L.control({ position: 'bottomright' });
-            legend.onAdd = function () {
-                const div = L.DomUtil.create('div', 'legend');
-                div.innerHTML = '<strong>Location Types</strong>';
-                for (const [type, color] of Object.entries(LOCATION_TYPE_COLORS)) {
-                    div.innerHTML += `<div class="legend-item">
-                        <div class="legend-color" style="background:${color}"></div>
-                        ${LOCATION_TYPE_LABELS[type] || type}
-                    </div>`;
-                }
-                div.innerHTML += '<hr style="margin:6px 0"><strong>Pathway Modes</strong>';
-                div.innerHTML += `<div class="legend-item">—— Walkway / Fare Gate</div>`;
-                div.innerHTML += `<div class="legend-item" style="color:#8e44ad">⬡ Elevator</div>`;
-                div.innerHTML += `<div class="legend-item" style="text-decoration-style:dashed">- - Stairs / Escalator</div>`;
-                return div;
-            };
-            legend.addTo(map);
         }
 
         // --- Station change ---
@@ -171,43 +319,47 @@
                 return;
             }
             currentStation = allStations.find(s => s.station_id === stationId);
-            renderStation();
+            if (map && map.isStyleLoaded()) {
+                renderStation();
+            }
         }
 
         function clearAll() {
-            markersGroup.clearLayers();
-            edgesGroup.clearLayers();
-            highlightGroup.clearLayers();
             markersById = {};
-            edgesById = {};
+            edgesData = [];
             stopEdgesMap = {};
             activeIssue = null;
             activeStopId = null;
             document.getElementById('issues-list').innerHTML = '<p class="no-issues">Select a station to view issues.</p>';
             document.getElementById('station-info').textContent = '';
+
+            // Clear highlight source
+            if (map && map.getSource('highlights')) {
+                map.getSource('highlights').setData({ type: 'FeatureCollection', features: [] });
+            }
         }
 
         function renderStation() {
-            if (!currentStation) return;
+            if (!currentStation || !map || !map.isStyleLoaded()) return;
 
             // Clear previous
-            markersGroup.clearLayers();
-            edgesGroup.clearLayers();
-            highlightGroup.clearLayers();
             markersById = {};
-            edgesById = {};
+            edgesData = [];
             stopEdgesMap = {};
             activeIssue = null;
             activeStopId = null;
+            if (map.getSource('highlights')) {
+                map.getSource('highlights').setData({ type: 'FeatureCollection', features: [] });
+            }
 
             // Info
             const info = document.getElementById('station-info');
             info.textContent = `${currentStation.children.length} stops · ${currentStation.edges.length} pathways`;
 
-            // Draw child stops first (so we know their coordinates for edges)
+            // Draw child stops as GeoJSON
             drawChildren();
 
-            // Draw edges as LINESTRINGs between stops
+            // Draw edges as GeoJSON
             drawEdges();
 
             // Fit bounds
@@ -215,11 +367,10 @@
                 const lats = currentStation.children.map(c => parseFloat(c.stop_lat)).filter(v => !isNaN(v));
                 const lngs = currentStation.children.map(c => parseFloat(c.stop_lon)).filter(v => !isNaN(v));
                 if (lats.length > 0 && lngs.length > 0) {
-                    const bounds = L.latLngBounds(
-                        [Math.min(...lats), Math.min(...lngs)],
-                        [Math.max(...lats), Math.max(...lngs)]
+                    map.fitBounds(
+                        [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+                        { padding: 30, maxZoom: 17 }
                     );
-                    map.fitBounds(bounds.pad(0.2), { maxZoom: 17 });
                 }
             }
 
@@ -228,6 +379,8 @@
         }
 
         function drawChildren() {
+            const features = [];
+
             currentStation.children.forEach(child => {
                 const lat = parseFloat(child.stop_lat);
                 const lon = parseFloat(child.stop_lon);
@@ -236,80 +389,63 @@
                 const color = LOCATION_TYPE_COLORS[child.location_type] || '#7f8c8d';
                 const label = LOCATION_TYPE_LABELS[child.location_type] || `Type ${child.location_type}`;
 
-                const marker = L.circleMarker([lat, lon], {
-                    radius: child.location_type === '0' ? 8 : 6,
-                    fillColor: color,
-                    color: '#2c3e50',
-                    weight: 2,
-                    opacity: 1,
-                    fillOpacity: 0.85
-                }).addTo(markersGroup);
-
-                marker.bindTooltip(`<b>${child.stop_id}</b><br>${child.stop_name}<br>${label}${child.platform_code ? ' · Code: ' + child.platform_code : ''}`, {
-                    direction: 'top',
-                    offset: [0, -8]
-                });
-
-                marker.on('click', (e) => {
-                    L.DomEvent.stopPropagation(e);
-                    if (activeStopId === child.stop_id) {
-                        // Deselect — show all edges
-                        activeStopId = null;
-                        showAllEdges();
-                    } else {
-                        // Select — show only edges connected to this stop
-                        activeStopId = child.stop_id;
-                        filterEdgesToStop(child.stop_id);
+                features.push({
+                    type: 'Feature',
+                    geometry: { type: 'Point', coordinates: [lon, lat] },
+                    properties: {
+                        stop_id: child.stop_id,
+                        stop_name: child.stop_name,
+                        location_type: child.location_type,
+                        location_type_label: label,
+                        platform_code: child.platform_code || '',
+                        color: color
                     }
-                    // Zoom to this marker
-                    map.setView([lat, lon], 17);
                 });
 
-                markersById[child.stop_id] = { marker, lat, lon, stop: child };
+                // Store for edge drawing and other lookups
+                markersById[child.stop_id] = { lat, lon, stop: child };
             });
+
+            map.getSource('stops').setData({ type: 'FeatureCollection', features });
         }
 
         function drawEdges() {
+            const features = [];
+            edgesData = [];
+            stopEdgesMap = {};
+
             currentStation.edges.forEach(edge => {
                 const from = markersById[edge.from_stop_id];
                 const to = markersById[edge.to_stop_id];
                 if (!from || !to) return;
 
-                const isStairsOrEscalator = edge.mode === '2' || edge.mode === '4';
-                const modeColor = PATHWAY_MODE_COLOR[edge.mode] || (isStairsOrEscalator ? '#e74c3c' : '#2c3e50');
-                const dashArray = PATHWAY_MODE_DASH[edge.mode] || null;
-                const modeLabel = PATHWAY_MODE_LABELS[edge.mode] || `Mode ${edge.mode}`;
-                const weight = isStairsOrEscalator ? 5 : (edge.mode === '5' ? 3 : 2);
-                const opacity = isStairsOrEscalator ? 0.85 : 0.6;
+                edgesData.push({ edge_id: edge.id, from_stop_id: edge.from_stop_id, to_stop_id: edge.to_stop_id });
 
-                // Draw pathway as a LINESTRING (two-point polyline) between stops
-                const linestring = [[from.lat, from.lon], [to.lat, to.lon]];
-                const line = L.polyline(linestring, {
-                    color: modeColor,
-                    weight: weight,
-                    opacity: opacity,
-                    dashArray: dashArray,
-                    edgeId: edge.id
-                }).addTo(edgesGroup);
-
-                // Bind tooltip with edge info
-                let tooltipText = `<b>${edge.id}</b><br>${modeLabel}`;
-                if (edge.length) tooltipText += `<br>Length: ${edge.length}m`;
-                if (edge.traversal_time) tooltipText += `<br>Time: ${edge.traversal_time}s`;
-                if (edge.signposted_as) tooltipText += `<br>→ ${edge.signposted_as}`;
-                line.bindTooltip(tooltipText, { sticky: true });
-
-                // Store for highlighting
-                if (!edgesById[edge.id]) edgesById[edge.id] = [];
-                const edgeEntry = { line, fromId: edge.from_stop_id, toId: edge.to_stop_id };
-                edgesById[edge.id].push(edgeEntry);
-
-                // Build reverse map: stop → connected edges
+                // Build reverse map: stop → connected edge IDs
                 if (!stopEdgesMap[edge.from_stop_id]) stopEdgesMap[edge.from_stop_id] = [];
-                stopEdgesMap[edge.from_stop_id].push(edgeEntry);
+                stopEdgesMap[edge.from_stop_id].push(edge.id);
                 if (!stopEdgesMap[edge.to_stop_id]) stopEdgesMap[edge.to_stop_id] = [];
-                stopEdgesMap[edge.to_stop_id].push(edgeEntry);
+                stopEdgesMap[edge.to_stop_id].push(edge.id);
+
+                features.push({
+                    type: 'Feature',
+                    geometry: {
+                        type: 'LineString',
+                        coordinates: [[from.lon, from.lat], [to.lon, to.lat]]
+                    },
+                    properties: {
+                        edge_id: edge.id,
+                        mode: edge.mode,
+                        mode_label: PATHWAY_MODE_LABELS[edge.mode] || `Mode ${edge.mode}`,
+                        length: edge.length || '',
+                        traversal_time: edge.traversal_time || '',
+                        signposted_as: edge.signposted_as || ''
+                    }
+                });
             });
+
+            map.getSource('edges').setData({ type: 'FeatureCollection', features });
+            showAllEdges(); // Reset filters to defaults
         }
 
         function renderIssues() {
@@ -342,9 +478,6 @@
             const card = document.querySelector(`.issue-card[data-index="${index}"]`);
             if (card) card.classList.add('active');
 
-            // Clear previous highlights
-            highlightGroup.clearLayers();
-
             const stopIdsToHighlight = new Set(issue.involved_stop_ids || []);
             const pathwayIdToHighlight = issue.pathway_id;
 
@@ -352,78 +485,64 @@
             if (activeIssue && activeIssue.index === index && activeIssue.stationId === currentStation.station_id) {
                 activeIssue = null;
                 document.querySelectorAll('.issue-card').forEach(c => c.classList.remove('active'));
+                map.getSource('highlights').setData({ type: 'FeatureCollection', features: [] });
                 return;
             }
             activeIssue = { index, stationId: currentStation.station_id };
 
-            // Highlight involved stops with pulsing rings
+            const highlightFeatures = [];
+
+            // Highlight involved stops
             stopIdsToHighlight.forEach(stopId => {
                 const entry = markersById[stopId];
                 if (!entry) return;
-                const ring = L.circleMarker([entry.lat, entry.lon], {
-                    radius: entry.stop.location_type === '0' ? 14 : 11,
-                    fillColor: 'transparent',
-                    color: '#e74c3c',
-                    weight: 3,
-                    opacity: 0.9,
-                    dashArray: '4,2'
-                }).addTo(highlightGroup);
-                ring.bindTooltip(`<b>${stopId}</b><br>Involved in this issue`, { direction: 'top' });
+                highlightFeatures.push({
+                    type: 'Feature',
+                    geometry: { type: 'Point', coordinates: [entry.lon, entry.lat] },
+                    properties: {
+                        type: 'stop',
+                        radius: entry.stop.location_type === '0' ? 14 : 11,
+                        stop_id: stopId
+                    }
+                });
             });
 
             // Highlight relevant pathway
-            if (pathwayIdToHighlight && edgesById[pathwayIdToHighlight]) {
-                edgesById[pathwayIdToHighlight].forEach(edge => {
-                    const fromEntry = markersById[edge.fromId];
-                    const toEntry = markersById[edge.toId];
-                    if (fromEntry && toEntry) {
-                        const hl = L.polyline([[fromEntry.lat, fromEntry.lon], [toEntry.lat, toEntry.lon]], {
-                            color: '#e74c3c',
-                            weight: 5,
-                            opacity: 0.9
-                        }).addTo(highlightGroup);
+            if (pathwayIdToHighlight) {
+                const edgeData = edgesData.find(e => e.edge_id === pathwayIdToHighlight);
+                if (edgeData) {
+                    const from = markersById[edgeData.from_stop_id];
+                    const to = markersById[edgeData.to_stop_id];
+                    if (from && to) {
+                        highlightFeatures.push({
+                            type: 'Feature',
+                            geometry: { type: 'LineString', coordinates: [[from.lon, from.lat], [to.lon, to.lat]] },
+                            properties: { type: 'edge' }
+                        });
                     }
-                });
+                }
             }
+
+            map.getSource('highlights').setData({ type: 'FeatureCollection', features: highlightFeatures });
         }
 
         // --- Pathway filtering by stop ---
         function filterEdgesToStop(stopId) {
-            const connectedEdges = stopEdgesMap[stopId] || [];
-            const connectedEdgeIds = new Set(connectedEdges.map(e => e.line.options.edgeId));
+            const connectedIds = stopEdgesMap[stopId] || [];
+            if (connectedIds.length === 0) return;
 
-            // Hide all edges…
-            edgesGroup.eachLayer(layer => {
-                if (layer instanceof L.Polyline) {
-                    layer.setStyle({ opacity: 0, fillOpacity: 0 });
-                }
-            });
+            const filterExpr = ['in', ['get', 'edge_id'], ['literal', [...new Set(connectedIds)]]];
 
-            // …then show only the connected ones
-            connectedEdges.forEach(edgeEntry => {
-                edgeEntry.line.setStyle({
-                    opacity: 0.85,
-                    fillOpacity: 0.85
-                });
+            // Append the stop-filter to each layer's base filter
+            Object.entries(BASE_EDGE_FILTERS).forEach(([layerId, baseFilter]) => {
+                map.setFilter(layerId, ['all', baseFilter, filterExpr]);
             });
         }
 
         function showAllEdges() {
-            edgesGroup.eachLayer(layer => {
-                if (layer instanceof L.Polyline) {
-                    const edgeId = layer.options.edgeId;
-                    // Re-apply original styling
-                    const originalEdge = currentStation.edges.find(e => e.id === edgeId);
-                    if (originalEdge) {
-                        const isStairsOrEsc = originalEdge.mode === '2' || originalEdge.mode === '4';
-                        layer.setStyle({
-                            opacity: isStairsOrEsc ? 0.85 : 0.6,
-                            fillOpacity: isStairsOrEsc ? 0.85 : 0.6
-                        });
-                    } else {
-                        layer.setStyle({ opacity: 0.6, fillOpacity: 0.6 });
-                    }
-                }
+            // Restore base filters (no stop filtering)
+            Object.entries(BASE_EDGE_FILTERS).forEach(([layerId, baseFilter]) => {
+                map.setFilter(layerId, baseFilter);
             });
         }
 
