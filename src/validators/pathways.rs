@@ -44,12 +44,13 @@ pub struct StationWithPathwayIssue {
     coordinates : Option<Coord>,
     children: Vec<Arc<Stop>>,
     edges: Vec<Arc<Pathway>>,
-    pathway_issues: Vec<PathwayIssue>
+    pathway_issues: Vec<PathwayIssue>,
+    foreign_stops: Vec<Arc<Stop>>,
 }
 
 impl Serialize for StationWithPathwayIssue {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("Station", 5)?;
+        let mut state = serializer.serialize_struct("Station", 6)?;
         state.serialize_field("station_id", &self.station_id)?;
         if let Some(ref coord) = self.coordinates {
             state.serialize_field("coordinates", &[coord.x, coord.y])?;
@@ -57,17 +58,25 @@ impl Serialize for StationWithPathwayIssue {
         state.serialize_field("children", &self.children)?;
         state.serialize_field("edges", &self.edges)?;
         state.serialize_field("pathway_issues", &self.pathway_issues)?;
+        state.serialize_field("foreign_stops", &self.foreign_stops)?;
         state.end()
     }
 }
 
 impl StationWithPathwayIssue {
     pub fn new(station_id: String, coordinates: Option<Coord>, children: Vec<Arc<Stop>>,edges: Vec<Arc<Pathway>>) -> Self {
-        StationWithPathwayIssue {station_id, coordinates, children, edges, pathway_issues: vec![] }
+        StationWithPathwayIssue {station_id, coordinates, children, edges, pathway_issues: vec![], foreign_stops: vec![] }
     }
 
     pub fn add_issue(&mut self, issue: PathwayIssue) {
         self.pathway_issues.push(issue);
+    }
+
+    pub fn add_foreign_stop(&mut self, stop: Arc<Stop>) {
+        // Avoid duplicates
+        if !self.foreign_stops.iter().any(|s| s.id == stop.id) && !self.children.iter().any(|c| c.id == stop.id) {
+            self.foreign_stops.push(stop);
+        }
     }
 }
 pub struct PathwayDirectedGraph{
@@ -246,6 +255,19 @@ pub fn validate_by_station(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRul
 
         let mut station_with_issues = StationWithPathwayIssue::new(station_id, coordinates, children, edges);
         for issue in issues {
+            // For PathwayIncompatibleAncestor issues, collect foreign stops
+            // (stops that don't belong to this station) so they can be drawn on the map.
+            if issue.base_issue.issue_type == IssueType::PathwayIncompatibleAncestor {
+                for stop_id in &issue.involved_stop_ids {
+                    // Find the stop's ancestor; if it's different from this station, it's foreign
+                    if let Some(stop) = gtfs.stops.get(stop_id) {
+                        let ancestor = get_oldest_ancestor(stop, &gtfs.stops);
+                        if ancestor.as_ref().map(|a| &a.id) != Some(&station_with_issues.station_id) {
+                            station_with_issues.add_foreign_stop(stop.clone());
+                        }
+                    }
+                }
+            }
             station_with_issues.add_issue(issue);
         }
         stations_and_problems.push(station_with_issues);

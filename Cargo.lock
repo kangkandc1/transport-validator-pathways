@@ -1237,8 +1237,9 @@ dependencies = [
 
 [[package]]
 name = "gtfs-structures"
-version = "0.50.2"
-source = "git+https://github.com/kangkandc1/gtfs-structure_pathways?branch=feature%2Freading_levels#83b4a19951ec47bd09468600283593982e32e1f7"
+version = "0.50.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95c0e383d0d856d15be5225905e5fef8b044cd3c8235071cb54cb1a2b7c0678d"
 dependencies = [
  "base16ct",
  "bytes",

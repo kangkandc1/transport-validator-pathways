@@ -300,14 +300,16 @@
                 }
             });
 
-            // Map click outside any marker → deselect stop (show all edges)
+            // Map click outside any marker → deselect stop/issue, show all edges
             map.on('click', () => {
                 if (preventMapClick) {
                     preventMapClick = false;
                     return;
                 }
-                if (activeStopId !== null) {
+                if (activeStopId !== null || activeIssue !== null) {
                     activeStopId = null;
+                    activeIssue = null;
+                    document.querySelectorAll('.issue-card').forEach(c => c.classList.remove('active'));
                     showAllEdges();
                 }
             });
@@ -355,8 +357,10 @@
             }
 
             // Info
+            const foreignCount = currentStation.foreign_stops ? currentStation.foreign_stops.length : 0;
             const info = document.getElementById('station-info');
-            info.textContent = `${currentStation.children.length} stops · ${currentStation.edges.length} pathways`;
+            info.textContent = `${currentStation.children.length} stops · ${currentStation.edges.length} pathways` +
+                (foreignCount > 0 ? ` · ${foreignCount} foreign stops` : '');
 
             // Draw child stops as GeoJSON
             drawChildren();
@@ -364,16 +368,16 @@
             // Draw edges as GeoJSON
             drawEdges();
 
-            // Fit bounds
-            if (currentStation.children.length > 0) {
-                const lats = currentStation.children.map(c => parseFloat(c.stop_lat)).filter(v => !isNaN(v));
-                const lngs = currentStation.children.map(c => parseFloat(c.stop_lon)).filter(v => !isNaN(v));
-                if (lats.length > 0 && lngs.length > 0) {
-                    map.fitBounds(
-                        [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
-                        { padding: 30, maxZoom: 17 }
-                    );
-                }
+            // Fit bounds to include foreign stops
+            const allStops = [...currentStation.children];
+            if (currentStation.foreign_stops) allStops.push(...currentStation.foreign_stops);
+            const lats = allStops.map(c => parseFloat(c.stop_lat)).filter(v => !isNaN(v));
+            const lngs = allStops.map(c => parseFloat(c.stop_lon)).filter(v => !isNaN(v));
+            if (lats.length > 0 && lngs.length > 0) {
+                map.fitBounds(
+                    [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+                    { padding: 30, maxZoom: 17 }
+                );
             }
 
             // Render issues
@@ -407,6 +411,35 @@
                 // Store for edge drawing and other lookups
                 markersById[child.stop_id] = { lat, lon, stop: child };
             });
+
+            // Draw foreign stops (stops from other stations involved in PathwayIncompatibleAncestor issues)
+            if (currentStation.foreign_stops) {
+                currentStation.foreign_stops.forEach(stop => {
+                    const lat = parseFloat(stop.stop_lat);
+                    const lon = parseFloat(stop.stop_lon);
+                    if (isNaN(lat) || isNaN(lon)) return;
+
+                    const color = LOCATION_TYPE_COLORS[stop.location_type] || '#7f8c8d';
+                    const label = (LOCATION_TYPE_LABELS[stop.location_type] || `Type ${stop.location_type}`) + ' (other station)';
+
+                    features.push({
+                        type: 'Feature',
+                        geometry: { type: 'Point', coordinates: [lon, lat] },
+                        properties: {
+                            stop_id: stop.stop_id,
+                            stop_name: stop.stop_name,
+                            location_type: stop.location_type,
+                            location_type_label: label,
+                            platform_code: stop.platform_code || '',
+                            color: color,
+                            is_foreign: true
+                        }
+                    });
+
+                    // Store for edge drawing
+                    markersById[stop.stop_id] = { lat, lon, stop };
+                });
+            }
 
             map.getSource('stops').setData({ type: 'FeatureCollection', features });
         }
@@ -488,9 +521,20 @@
                 activeIssue = null;
                 document.querySelectorAll('.issue-card').forEach(c => c.classList.remove('active'));
                 map.getSource('highlights').setData({ type: 'FeatureCollection', features: [] });
+                showAllEdges();
                 return;
             }
             activeIssue = { index, stationId: currentStation.station_id };
+
+            // For PathwayIncompatibleAncestor issues: hide all pathways except the problem one
+            if (issue.issue_type === 'PathwayIncompatibleAncestor' && pathwayIdToHighlight) {
+                const filterExpr = ['==', ['get', 'edge_id'], pathwayIdToHighlight];
+                Object.entries(BASE_EDGE_FILTERS).forEach(([layerId, baseFilter]) => {
+                    map.setFilter(layerId, ['all', baseFilter, filterExpr]);
+                });
+            } else {
+                showAllEdges();
+            }
 
             const highlightFeatures = [];
 
@@ -526,6 +570,21 @@
             }
 
             map.getSource('highlights').setData({ type: 'FeatureCollection', features: highlightFeatures });
+
+            // Zoom to the involved stops
+            const involvedCoords = [];
+            stopIdsToHighlight.forEach(stopId => {
+                const entry = markersById[stopId];
+                if (entry) involvedCoords.push([entry.lon, entry.lat]);
+            });
+            if (involvedCoords.length > 0) {
+                const lngs = involvedCoords.map(c => c[0]);
+                const lats = involvedCoords.map(c => c[1]);
+                map.fitBounds(
+                    [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+                    { padding: 80, maxZoom: 17 }
+                );
+            }
         }
 
         // --- Pathway filtering by stop ---
