@@ -213,6 +213,7 @@ pub fn validate_by_station(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRul
     let dangling_stop_issues_by_station = get_dangling_stop_validation_issues_by_station(gtfs);
     let locked_platform_issues_by_station = get_locked_platform_validation_issues_by_station(gtfs);
     let falsely_labelled_issues_by_station = get_falsely_labelled_wheelchair_accessible_issues_by_station(gtfs);
+    let foreign_ancestor_for_pathway_issues_by_station = get_pathways_inside_station_with_foreign_ancestor_issues_by_station(gtfs);
 
     // Merge issues from all three validators into one HashMap keyed by station_id
     let mut all_issues_by_station: HashMap<String, Vec<PathwayIssue>> = HashMap::new();
@@ -223,6 +224,10 @@ pub fn validate_by_station(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRul
         all_issues_by_station.entry(station_id).or_default().extend(issues);
     }
     for (station_id, issues) in falsely_labelled_issues_by_station {
+        all_issues_by_station.entry(station_id).or_default().extend(issues);
+    }
+
+    for(station_id,issues) in foreign_ancestor_for_pathway_issues_by_station {
         all_issues_by_station.entry(station_id).or_default().extend(issues);
     }
 
@@ -267,6 +272,28 @@ fn validate_ancestor_of_pathways(gtfs: &gtfs_structures::Gtfs) -> Vec<PathwayIss
         .filter(|pathway| !pathway_connecting_stops_with_same_ancestor(pathway, &gtfs.stops))
         .map(make_no_common_ancestor_for_pathway_issue)
         .collect()
+}
+
+
+fn get_pathways_inside_station_with_foreign_ancestor_issues_by_station(gtfs: &Gtfs) -> HashMap<String, Vec<PathwayIssue>> {
+    let connected_stations = get_unique_stations_connected_by_pathways(gtfs);
+
+    let mut ancestor_issues_by_station: HashMap<String, Vec<PathwayIssue>> = HashMap::new();
+
+    for (station_id, children_inside_connected_station) in &connected_stations {
+        let pathways_with_incompatible_ancestor: Vec<PathwayIssue> = children_inside_connected_station
+            .iter()
+            .flat_map(|stop_arc| stop_arc.as_ref().pathways.iter())
+            .filter(|pathway| !pathway_connecting_stops_with_same_ancestor(pathway, &gtfs.stops))
+            .map( make_no_common_ancestor_for_pathway_issue)
+            .collect();
+
+        if !pathways_with_incompatible_ancestor.is_empty() {
+            ancestor_issues_by_station.insert(station_id.clone(), pathways_with_incompatible_ancestor);
+        }
+    }
+
+    ancestor_issues_by_station
 }
 
 fn validate_distance_spanned_by_pathway(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRules) -> Vec<Issue> {

@@ -144,6 +144,8 @@
                 zoom: 6
             });
 
+            map.addControl(new maplibregl.NavigationControl(), 'top-left');
+
             map.on('load', () => {
                 // Add empty sources
                 map.addSource('stops', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
