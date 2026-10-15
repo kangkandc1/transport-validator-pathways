@@ -40,6 +40,7 @@
         <select id="station-select">
             <option value="">-- Select a station --</option>
         </select>
+        <input type="text" id="station-search" placeholder="Search station by ID…" style="padding: 6px 10px; font-size: 14px; border-radius: 4px; border: none; min-width: 220px;" />
         <span id="station-info" style="font-size: 13px; opacity: 0.8;"></span>
     </div>
     <div id="main">
@@ -133,6 +134,37 @@
                 select.appendChild(opt);
             });
             select.addEventListener('change', onStationChange);
+
+            // Search functionality
+            const searchInput = document.getElementById('station-search');
+            let searchTimeout;
+            searchInput.addEventListener('input', () => {
+                clearTimeout(searchTimeout);
+                const query = searchInput.value.trim();
+                // Debounce: wait 300ms after user stops typing before searching
+                searchTimeout = setTimeout(() => {
+                    if (query === '') {
+                        searchInput.style.backgroundColor = '';
+                        return;
+                    }
+                    // Search for exact or partial station_id match
+                    const match = allStations.find(s => s.station_id === query)
+                        || allStations.find(s => s.station_id.toLowerCase().includes(query.toLowerCase()));
+                    if (match) {
+                        // Synchronize dropdown to matched station
+                        select.value = match.station_id;
+                        searchInput.style.backgroundColor = '#d5f5e3';
+                        onStationChange();
+                    } else {
+                        searchInput.style.backgroundColor = '#fadbd8';
+                    }
+                }, 300);
+            });
+
+            // Clear search highlight when dropdown is used manually
+            select.addEventListener('change', () => {
+                searchInput.style.backgroundColor = '';
+            });
         }
 
         // --- Map initialization ---
@@ -284,6 +316,7 @@
                         const props = e.features[0].properties;
                         let html = `<b>${props.edge_id}</b><br>${props.mode_label}`;
                         if (props.length) html += `<br>Length: ${props.length}m`;
+                        if (props.actual_distance != null) html += `<br>Actual Distance: ${props.actual_distance}m`;
                         if (props.traversal_time) html += `<br>Time: ${props.traversal_time}s`;
                         if (props.signposted_as) html += `<br>→ ${props.signposted_as}`;
                         hoverPopup.setLngLat(e.lngLat).setHTML(html).addTo(map);
@@ -444,6 +477,17 @@
             map.getSource('stops').setData({ type: 'FeatureCollection', features });
         }
 
+        // Haversine distance in meters between two lat/lon coordinates
+        function haversineDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371000; // Earth radius in meters
+            const toRad = deg => deg * Math.PI / 180;
+            const dLat = toRad(lat2 - lat1);
+            const dLon = toRad(lon2 - lon1);
+            const a = Math.sin(dLat / 2) ** 2 +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        }
+
         function drawEdges() {
             const features = [];
             edgesData = [];
@@ -462,6 +506,8 @@
                 if (!stopEdgesMap[edge.to_stop_id]) stopEdgesMap[edge.to_stop_id] = [];
                 stopEdgesMap[edge.to_stop_id].push(edge.id);
 
+                const actualDistance = haversineDistance(from.lat, from.lon, to.lat, to.lon);
+
                 features.push({
                     type: 'Feature',
                     geometry: {
@@ -473,6 +519,7 @@
                         mode: edge.mode,
                         mode_label: PATHWAY_MODE_LABELS[edge.mode] || `Mode ${edge.mode}`,
                         length: edge.length || '',
+                        actual_distance: Math.round(actualDistance * 100) / 100,
                         traversal_time: edge.traversal_time || '',
                         signposted_as: edge.signposted_as || ''
                     }

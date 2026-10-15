@@ -123,6 +123,8 @@ pub enum IssueType {
     LockedPlatform,
     /// If a location is labelled as Wheelchair accessible and pathways are available for the Station, it should be accessible from at least one entrance/exit without requiring usage of stairs or escalators
     WheelchairBoardingLabelInconsistentWithPathways,
+    /// If stop A is walkable (without elevators or assistance) from stop B, and stop C is walkable from stab B, then it must be the case stop A is walkable from stop A
+    PathwaysImpliesTransitiveInconsistency
 }
 
 /// Represents an object related to another object that is causing an issue.
