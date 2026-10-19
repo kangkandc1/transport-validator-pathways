@@ -220,7 +220,7 @@ Here is a human friendly list of them :
  | InconsitentWheelchairAccessbility | Warning          |  Wheelchair accessibilty label for the stop inconsistent with the information implied by pathways                                                                                        | 
 | LockedPlatform                     |Error           | If a station is connected by pathways, every platform and boarding area must be reachable from at least one exit/entrance |
 |PathwayToPlatformWithBoardingAreas | Error | A pathway is connecting stops which have boarding areas |
-**Currently, only the NoCommonAncestor, DanglingStop,LockedPlatform,  PathwayToPlatformWithBoardingAreas, InconsitentWheelchairAccessbility and PathwaySpanTooHigh are available . The other checks will be added one after another.**
+**Currently,  the check TransitiveIncompabilityOfPathways is not available. It will be added shortly**
 
 ### Geojson information
 
