@@ -62,26 +62,34 @@ pub fn validate_and_metadata(
 
     match gtfs_structures::Gtfs::try_from(rgtfs) {
         Ok(ref gtfs) => {
-            issues.extend(
-                validators::unused_stop::validate(gtfs)
-                    .into_iter()
-                    .chain(validators::duration_distance::validate(gtfs, custom_rules))
-                    .chain(validators::check_name::validate(gtfs))
-                    .chain(validators::check_id::validate(gtfs))
-                    .chain(validators::stops::validate(gtfs))
-                    .chain(validators::routes::validate(gtfs))
-                    .chain(validators::shapes::validate(gtfs))
-                    .chain(validators::agency::validate(gtfs))
-                    .chain(validators::calendar::validate(gtfs))
-                    .chain(validators::duplicate_stops::validate(gtfs))
-                    .chain(validators::fare_attributes::validate(gtfs))
-                    .chain(validators::feed_info::validate(gtfs))
-                    .chain(validators::stop_times::validate(gtfs))
-                    .chain(validators::interpolated_stoptimes::validate(gtfs))
-                    .chain(validators::unusable_trip::validate(gtfs))
-                    .chain(validators::pathways::validate(gtfs,custom_rules))
-                ,
-            );
+            if custom_rules.only_pathway_validation {
+                issues.extend(
+                    validators::stops::validate(gtfs)
+                        .into_iter()
+                        .chain(validators::stops::validate(gtfs))
+                        .chain(validators::pathways::validate(gtfs, custom_rules)),
+                );
+            } else {
+                issues.extend(
+                    validators::unused_stop::validate(gtfs)
+                        .into_iter()
+                        .chain(validators::duration_distance::validate(gtfs, custom_rules))
+                        .chain(validators::check_name::validate(gtfs))
+                        .chain(validators::check_id::validate(gtfs))
+                        .chain(validators::stops::validate(gtfs))
+                        .chain(validators::routes::validate(gtfs))
+                        .chain(validators::shapes::validate(gtfs))
+                        .chain(validators::agency::validate(gtfs))
+                        .chain(validators::calendar::validate(gtfs))
+                        .chain(validators::duplicate_stops::validate(gtfs))
+                        .chain(validators::fare_attributes::validate(gtfs))
+                        .chain(validators::feed_info::validate(gtfs))
+                        .chain(validators::stop_times::validate(gtfs))
+                        .chain(validators::interpolated_stoptimes::validate(gtfs))
+                        .chain(validators::unusable_trip::validate(gtfs))
+                        .chain(validators::pathways::validate(gtfs, custom_rules)),
+                );
+            }
             issues
                 .iter_mut()
                 .for_each(|issue| issue.push_related_geojson(gtfs));
