@@ -15,6 +15,9 @@ pub struct CustomRules {
     pub max_taxi_speed: Option<f64>,
     pub max_other_speed: Option<f64>,
     pub max_distance_spanned_by_pathway: Option<f64>,
+    #[serde(default)]
+    pub only_pathway_validation: bool,
+    pub max_allowed_ramp_slope: Option<f64>,
 }
 
 pub fn custom_rules(file_path: Option<String>) -> CustomRules {
