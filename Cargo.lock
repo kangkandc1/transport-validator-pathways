@@ -1238,7 +1238,7 @@ dependencies = [
 [[package]]
 name = "gtfs-structures"
 version = "0.50.2"
-source = "git+https://github.com/kangkandc1/gtfs-structure_pathways?branch=feature%2Fgtfs_has_pathways#a82c385586a541dec45fdd3a390f5391fd8726d7"
+source = "git+https://github.com/kangkandc1/gtfs-structure_pathways?branch=feature%2Fgtfs_has_pathways#7d121386740483c64472a373185f247bb09fcc2a"
 dependencies = [
  "base16ct",
  "bytes",
@@ -1514,7 +1514,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -2239,7 +2239,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "thiserror",
  "tokio",
  "tracing",
@@ -2277,7 +2277,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.59.0",
 ]

@@ -1,5 +1,5 @@
 use crate::{Issue, IssueType, Severity};
-use gtfs_structures::{Availability, Gtfs, Id, LocationType, Pathway, PathwayDirectionType, PathwayMode, RawGtfs, Stop};
+use gtfs_structures::{Availability, Gtfs, Id, LocationType, Pathway, PathwayDirectionType, PathwayMode, RawGtfs, Stop, StopAccess};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
@@ -768,7 +768,7 @@ fn get_all_stops_in_connected_station_not_connected_by_pathways(
 
             let missing: Vec<Arc<Stop>> = children
                 .iter()
-                .filter(|s| s.location_type != LocationType::BoardingArea && !connected_ids.contains(s.id.as_str()))
+                .filter(|s| s.location_type != LocationType::BoardingArea && !(s.location_type==LocationType::StopPoint && s.stop_access==StopAccess::DirectlyAccessible) && !connected_ids.contains(s.id.as_str()))
                 .cloned()
                 .collect();
 
@@ -803,7 +803,7 @@ fn get_all_island_stops_in_connected_station(
             let islands: Vec<Arc<Stop>> = children
                 .iter()
                 .filter(|s| is_a_platform(s))
-                .filter(|s| !stop_reachable_from_at_least_one_entrance(s,&entries,&graph_of_station))
+                .filter(|s| !(s.stop_access == StopAccess::DirectlyAccessible) &&!stop_reachable_from_at_least_one_entrance(s,&entries,&graph_of_station))
                 .cloned()
                 .collect();
 
@@ -1092,6 +1092,7 @@ fn test_ancestor_detection() {
         timezone: None,
         tts_name: None,
         wheelchair_boarding: Availability::InformationNotAvailable,
+        stop_access: Default::default(),
     };
 
 
@@ -1113,6 +1114,7 @@ fn test_ancestor_detection() {
         timezone: None,
         tts_name: None,
         wheelchair_boarding: Availability::InformationNotAvailable,
+        stop_access: Default::default(),
     };
 
     let platform_two = gtfs_structures::Stop {
@@ -1133,6 +1135,7 @@ fn test_ancestor_detection() {
         timezone: None,
         tts_name: None,
         wheelchair_boarding: Availability::InformationNotAvailable,
+        stop_access: Default::default(),
     };
 
     let boarding_area_platform_two = gtfs_structures::Stop {
@@ -1153,6 +1156,7 @@ fn test_ancestor_detection() {
         timezone: None,
         tts_name: None,
         wheelchair_boarding: Availability::InformationNotAvailable,
+        stop_access: Default::default(),
     };
 
     let mut all_stops: HashMap<String, Arc<Stop>> = HashMap::new();
@@ -1199,6 +1203,7 @@ fn pathway_ancestor_validation_fails_when_stops_have_different_ancestors() {
         timezone: None,
         tts_name: None,
         wheelchair_boarding: Availability::InformationNotAvailable,
+        stop_access: Default::default(),
     };
 
 
@@ -1220,6 +1225,7 @@ fn pathway_ancestor_validation_fails_when_stops_have_different_ancestors() {
         timezone: None,
         tts_name: None,
         wheelchair_boarding: Availability::InformationNotAvailable,
+        stop_access: Default::default(),
     };
 
     let west_bahnhof = gtfs_structures::Stop {
@@ -1240,6 +1246,7 @@ fn pathway_ancestor_validation_fails_when_stops_have_different_ancestors() {
         timezone: None,
         tts_name: None,
         wheelchair_boarding: Availability::InformationNotAvailable,
+        stop_access: Default::default(),
     };
 
 
@@ -1261,6 +1268,7 @@ fn pathway_ancestor_validation_fails_when_stops_have_different_ancestors() {
         timezone: None,
         tts_name: None,
         wheelchair_boarding: Availability::InformationNotAvailable,
+        stop_access: Default::default(),
     };
 
     let defective_pathway = Pathway {
@@ -1328,6 +1336,7 @@ fn stops_exceeding_threshold_marked_as_too_far(){
         timezone: None,
         tts_name: None,
         wheelchair_boarding: Availability::InformationNotAvailable,
+        stop_access: Default::default(),
     };
 
 
@@ -1349,6 +1358,7 @@ fn stops_exceeding_threshold_marked_as_too_far(){
         timezone: None,
         tts_name: None,
         wheelchair_boarding: Availability::InformationNotAvailable,
+        stop_access: Default::default(),
     };
     let file_path = Some(String::from("test_data/custom_rules/custom_rules.yml"));
     let custom_rules = custom_rules(file_path);
@@ -1378,6 +1388,7 @@ fn stops_below_threshold_not_marked_as_too_far(){
         timezone: None,
         tts_name: None,
         wheelchair_boarding: Availability::InformationNotAvailable,
+        stop_access: Default::default(),
     };
 
 
@@ -1399,6 +1410,7 @@ fn stops_below_threshold_not_marked_as_too_far(){
         timezone: None,
         tts_name: None,
         wheelchair_boarding: Availability::InformationNotAvailable,
+        stop_access: Default::default(),
     };
 
     let file_path = Some(String::from("test_data/custom_rules/custom_rules.yml"));
@@ -1542,5 +1554,15 @@ fn test_levels_read_correctly(){
     for level in levels{
         println!("{:#?}", level);
     }
+
+}
+
+#[test]
+fn test_stop_access_read_correctly(){
+    let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
+    let stops = gtfs.stops;
+    let example_stop = stops.get("station_A_entrance_1").unwrap();
+    assert_eq!(example_stop.stop_access,StopAccess::NotDirectlyAccessible)
+
 
 }
