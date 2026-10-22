@@ -222,7 +222,7 @@ Here is a human friendly list of them :
 |PathwayToPlatformWithBoardingAreas | Error | A pathway is connecting stops which have boarding areas |
 **Currently,  the check TransitiveIncompabilityOfPathways is not available. It will be added shortly**
 
-### Geojson information
+### Geojson information 
 
 When relevant for the check, geojson information is added for each check output,
 making the GTFS debug process easier.

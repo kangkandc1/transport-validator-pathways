@@ -6,6 +6,7 @@
     <title>Station Pathway Issues Visualizer</title>
     <script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
     <link href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/@turf/turf@7/turf.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; height: 100vh; display: flex; flex-direction: column; }
@@ -59,9 +60,9 @@
                 <div class="legend-item"><div class="legend-color" style="background:#9b59b6"></div> Exit</div>
                 <hr style="margin:6px 0">
                 <strong>Pathway Modes</strong>
-                <div class="legend-item">—— Walkway / Fare Gate</div>
-                <div class="legend-item" style="color:#8e44ad">⬡ Elevator</div>
-                <div class="legend-item" style="text-decoration-style:dashed">- - Stairs / Escalator</div>
+                <div class="legend-item">—— Walkway / Fare Gate / Move. Walkway / Exit Gate</div>
+                <div class="legend-item"><div class="legend-color" style="background:transparent; border-style:dashed; border-color:#e74c3c; border-radius:0"></div> Stairs / Escalator <span style="color:#999;font-size:10px">(dashed red, thick)</span></div>
+                <div class="legend-item"><div class="legend-color" style="background:#8e44ad"></div> Elevator <span style="color:#999;font-size:10px">(dashed purple)</span></div>
             </div>
         </div>
     </div>
@@ -319,6 +320,7 @@
                         if (props.actual_distance != null) html += `<br>Actual Distance: ${props.actual_distance}m`;
                         if (props.traversal_time) html += `<br>Time: ${props.traversal_time}s`;
                         if (props.signposted_as) html += `<br>→ ${props.signposted_as}`;
+                        if (props.max_slope != null) html += `<br>Max Slope: ${props.max_slope}`;
                         hoverPopup.setLngLat(e.lngLat).setHTML(html).addTo(map);
                     });
                     map.on('mouseleave', layerId, () => {
@@ -488,41 +490,139 @@
             return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         }
 
+        // --- Overlap detection & curve perturbation ---
+
+        /**
+         * Creates a perturbed/curved line to avoid overlap with other lines
+         * Uses Turf.js bezierSpline for smooth curves
+         * @param {[number,number]} start - start coordinate [lon, lat]
+         * @param {[number,number]} end - end coordinate [lon, lat]
+         * @param {number} index - index of this line in the bundle (0-based)
+         * @param {number} total - total number of overlapping lines
+         * @returns {[number,number][]} array of coordinates forming the curved line
+         */
+        function createPerturbedLineCoords(start, end, index, total) {
+            // Only one line — no need to curve
+            if (total <= 1) return [start, end];
+
+            // Spread angle across all overlapping lines (in degrees)
+            const angle = -15 + (30 / (total - 1)) * index;
+
+            // Base offset in km
+            const bulgeDistKm = 0.002;
+
+            // Compute midpoint via turf
+            const lineLength = turf.distance(start, end, { units: 'kilometers' });
+
+            const oneThirdPoint = turf.along(
+                turf.lineString([start, end]),
+                lineLength / 3,
+                { units: 'kilometers' }
+            );
+
+            const twoThirdPoint = turf.along(
+                turf.lineString([start, end]),
+                2 * lineLength / 3,
+                { units: 'kilometers' }
+            );
+
+            // Offset both intermediate points sideways
+            const bulge1 = turf.destination(oneThirdPoint, bulgeDistKm, angle, { units: 'kilometers' });
+            const bulge2 = turf.destination(twoThirdPoint, bulgeDistKm, angle, { units: 'kilometers' });
+
+            const rawCoords = [
+                start,
+                bulge1.geometry.coordinates,
+                bulge2.geometry.coordinates,
+                end
+            ];
+
+            // Apply bezier spline for smooth curve
+            const curved = turf.bezierSpline(turf.lineString(rawCoords), { resolution: 100, sharpness: 1 });
+            return curved.geometry.coordinates;
+        }
+
+        /**
+         * Groups edges into bundles of overlapping links (connecting same node pair).
+         * @param {Array} allEdges - all edges from currentStation.edges
+         * @returns {Map<string, Array>} map of "sortedStopA|sortedStopB" -> array of edge objects
+         */
+        function groupOverlappingEdges(allEdges) {
+            const bundles = new Map(); // key = "stopA|stopB" (sorted) -> edges[]
+
+            allEdges.forEach(edge => {
+                const from = markersById[edge.from_stop_id];
+                const to = markersById[edge.to_stop_id];
+                if (!from || !to) return;
+
+                const nodes = [edge.from_stop_id, edge.to_stop_id].sort();
+                const key = nodes[0] + '|' + nodes[1];
+
+                if (!bundles.has(key)) {
+                    bundles.set(key, []);
+                }
+                bundles.get(key).push(edge);
+            });
+
+            return bundles;
+        }
+
         function drawEdges() {
             const features = [];
             edgesData = [];
             stopEdgesMap = {};
 
-            currentStation.edges.forEach(edge => {
-                const from = markersById[edge.from_stop_id];
-                const to = markersById[edge.to_stop_id];
-                if (!from || !to) return;
+            // Group overlapping edges (connect same two stops)
+            const bundles = groupOverlappingEdges(currentStation.edges);
 
-                edgesData.push({ edge_id: edge.id, from_stop_id: edge.from_stop_id, to_stop_id: edge.to_stop_id });
+            bundles.forEach((bundleEdges) => {
+                const total = bundleEdges.length;
 
-                // Build reverse map: stop → connected edge IDs
-                if (!stopEdgesMap[edge.from_stop_id]) stopEdgesMap[edge.from_stop_id] = [];
-                stopEdgesMap[edge.from_stop_id].push(edge.id);
-                if (!stopEdgesMap[edge.to_stop_id]) stopEdgesMap[edge.to_stop_id] = [];
-                stopEdgesMap[edge.to_stop_id].push(edge.id);
+                bundleEdges.forEach((edge, idx) => {
+                    const from = markersById[edge.from_stop_id];
+                    const to = markersById[edge.to_stop_id];
+                    if (!from || !to) return;
 
-                const actualDistance = haversineDistance(from.lat, from.lon, to.lat, to.lon);
+                    // Generate geometry: curved if overlapping, straight otherwise
+                    const coords = createPerturbedLineCoords(
+                        [from.lon, from.lat],
+                        [to.lon, to.lat],
+                        idx,
+                        total
+                    );
 
-                features.push({
-                    type: 'Feature',
-                    geometry: {
-                        type: 'LineString',
-                        coordinates: [[from.lon, from.lat], [to.lon, to.lat]]
-                    },
-                    properties: {
+                    edgesData.push({
                         edge_id: edge.id,
-                        mode: edge.mode,
-                        mode_label: PATHWAY_MODE_LABELS[edge.mode] || `Mode ${edge.mode}`,
-                        length: edge.length || '',
-                        actual_distance: Math.round(actualDistance * 100) / 100,
-                        traversal_time: edge.traversal_time || '',
-                        signposted_as: edge.signposted_as || ''
-                    }
+                        from_stop_id: edge.from_stop_id,
+                        to_stop_id: edge.to_stop_id,
+                        coordinates: coords
+                    });
+
+                    // Build reverse map: stop → connected edge IDs
+                    if (!stopEdgesMap[edge.from_stop_id]) stopEdgesMap[edge.from_stop_id] = [];
+                    stopEdgesMap[edge.from_stop_id].push(edge.id);
+                    if (!stopEdgesMap[edge.to_stop_id]) stopEdgesMap[edge.to_stop_id] = [];
+                    stopEdgesMap[edge.to_stop_id].push(edge.id);
+
+                    const actualDistance = haversineDistance(from.lat, from.lon, to.lat, to.lon);
+
+                    features.push({
+                        type: 'Feature',
+                        geometry: {
+                            type: 'LineString',
+                            coordinates: coords
+                        },
+                        properties: {
+                            edge_id: edge.id,
+                            mode: edge.mode,
+                            mode_label: PATHWAY_MODE_LABELS[edge.mode] || `Mode ${edge.mode}`,
+                            length: edge.length || '',
+                            actual_distance: Math.round(actualDistance * 100) / 100,
+                            traversal_time: edge.traversal_time || '',
+                            signposted_as: edge.signposted_as || '',
+                            max_slope: edge.max_slope != null ? edge.max_slope : null
+                        }
+                    });
                 });
             });
 
@@ -600,16 +700,22 @@
                 });
             });
 
-            // Highlight relevant pathway
+            // Highlight relevant pathway (use curved coords if available)
             if (pathwayIdToHighlight) {
                 const edgeData = edgesData.find(e => e.edge_id === pathwayIdToHighlight);
                 if (edgeData) {
-                    const from = markersById[edgeData.from_stop_id];
-                    const to = markersById[edgeData.to_stop_id];
-                    if (from && to) {
+                    const highlightCoords = edgeData.coordinates
+                        && edgeData.coordinates.length > 0
+                        ? edgeData.coordinates
+                        : (() => {
+                            const f = markersById[edgeData.from_stop_id];
+                            const t = markersById[edgeData.to_stop_id];
+                            return (f && t) ? [[f.lon, f.lat], [t.lon, t.lat]] : null;
+                        })();
+                    if (highlightCoords) {
                         highlightFeatures.push({
                             type: 'Feature',
-                            geometry: { type: 'LineString', coordinates: [[from.lon, from.lat], [to.lon, to.lat]] },
+                            geometry: { type: 'LineString', coordinates: highlightCoords },
                             properties: { type: 'edge' }
                         });
                     }

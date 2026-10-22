@@ -2,3 +2,4 @@ max_bus_speed: 10
 max_gondola_speed: 100.5
 max_distance_spanned_by_pathway: 250
 only_pathway_validation : true
+max_allowed_ramp_slope: 0.06
