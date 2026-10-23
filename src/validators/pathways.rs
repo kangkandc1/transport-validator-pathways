@@ -208,7 +208,7 @@ impl PathwayDirectedGraph {
             PathwayMode::Elevator => true,
             PathwayMode::Walkway | PathwayMode::MovingSidewalk => pathway
                 .max_slope
-                .is_some_and(|slope| slope.abs() < max_slope_ramp as f32),
+                .is_none_or(|slope| slope.abs() <= max_slope_ramp as f32),
             _ => false,
             }
     }
@@ -1563,6 +1563,30 @@ fn test_stop_access_read_correctly(){
     let stops = gtfs.stops;
     let example_stop = stops.get("station_A_entrance_1").unwrap();
     assert_eq!(example_stop.stop_access,StopAccess::NotDirectlyAccessible)
+
+
+}
+
+#[test]
+fn test_debug(){
+    let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/mdb").unwrap();
+    let connected_stations = get_unique_stations_connected_by_pathways(&gtfs);
+    let stations_and_their_children = get_stations_and_their_children(&gtfs);
+    let children = stations_and_their_children.get("de:12065:900203898");
+
+    let platforms_entrances_of_station = get_platforms_and_boarding_areas_and_entrances_for_station(children.unwrap());
+    let mut graph_of_station = PathwayDirectedGraph::new(0.06);
+    for child in children.unwrap() {
+        graph_of_station.add_stop(&child);
+    }
+
+    for nodes in graph_of_station.adjacent_nodes_wheelchair_accessible{
+        println!("{:#?}", nodes);
+    }
+
+    for nodes in graph_of_station.adjacent_nodes{
+        println!("{:#?}", nodes);
+    }
 
 
 }
