@@ -33,8 +33,9 @@ impl  PathwayIssue {
 
 impl Serialize for PathwayIssue {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("PathwayIssue", 3)?;
+        let mut state = serializer.serialize_struct("PathwayIssue", 4)?;
         state.serialize_field("issue_type", &self.base_issue.issue_type)?;
+        state.serialize_field("severity", &self.base_issue.severity)?;
         state.serialize_field("pathway_id", &self.pathway_id)?;
         state.serialize_field("involved_stop_ids", &self.involved_stop_ids)?;
 
@@ -100,13 +101,14 @@ pub struct PathwayDirectedGraph{
     adjacent_nodes: HashMap<String,Vec<String>>,
     adjacent_nodes_wheelchair_accessible : HashMap<String,Vec<String>>,
     nodes_reachable_by_walkway : HashMap<String,HashSet<String>>,
+    nodes_reachable_by_elevator_or_stairs : HashMap<String,HashSet<String>>,
     max_slope_ramp: f64
 }
 
 impl PathwayDirectedGraph {
 
     pub fn new(max_slope_ramp: f64) -> Self {
-        PathwayDirectedGraph{adjacent_nodes: HashMap::new(), adjacent_nodes_wheelchair_accessible: Default::default(), nodes_reachable_by_walkway: Default::default(), max_slope_ramp}
+        PathwayDirectedGraph{adjacent_nodes: HashMap::new(), adjacent_nodes_wheelchair_accessible: Default::default(), nodes_reachable_by_walkway: Default::default(), nodes_reachable_by_elevator_or_stairs: Default::default(), max_slope_ramp}
     }
     pub fn add_stop(&mut self, stop: &Stop) {
         // Ensure the stop exists as a node even if it has no pathways.
@@ -116,6 +118,8 @@ impl PathwayDirectedGraph {
         outgoing.extend(stop.pathways.iter().map(|p| p.to_stop_id.clone()));
         outgoing_stepless.extend(stop.pathways.iter().filter(|p| Self::is_pathway_accessible_by_wheelchair(p, self.max_slope_ramp)).map(|p| p.to_stop_id.clone()));
         walkable_without_assitannce.extend(stop.pathways.iter().filter(|p| Self::is_pathway_walkable_without_assistance(p)).map(|p| p.to_stop_id.clone()));
+        let elev_or_stairs = self.nodes_reachable_by_elevator_or_stairs.entry(stop.id.clone()).or_default();
+        elev_or_stairs.extend(stop.pathways.iter().filter(|p| Self::is_pathway_elevator_or_stairs(p)).map(|p| p.to_stop_id.clone()));
 
         // Add the reverse edge for bidirectional pathways.
         for pathway in &stop.pathways {
@@ -134,6 +138,12 @@ impl PathwayDirectedGraph {
 
                 if Self::is_pathway_walkable_without_assistance(&pathway) {
                     self.nodes_reachable_by_walkway.entry(pathway.to_stop_id.clone())
+                    .or_default()
+                        .insert(stop.id.clone());
+                }
+
+                if Self::is_pathway_elevator_or_stairs(&pathway) {
+                    self.nodes_reachable_by_elevator_or_stairs.entry(pathway.to_stop_id.clone())
                     .or_default()
                         .insert(stop.id.clone());
                 }
@@ -220,6 +230,13 @@ impl PathwayDirectedGraph {
         )
     }
 
+    fn is_pathway_elevator_or_stairs(pathway: &Pathway) -> bool {
+        matches ! (
+            pathway.mode,
+            PathwayMode::Elevator| PathwayMode::Stairs| PathwayMode::Escalator
+        )
+    }
+
 }
 
 impl fmt::Display for PathwayDirectedGraph {
@@ -274,6 +291,15 @@ pub fn validate_by_station(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRul
     rayon::scope(|s| {
         s.spawn(|_| {
             let result = get_dangling_stop_validation_issues_by_station(&connected_stations, &stations_and_their_children);
+            if !result.is_empty() {
+                let mut map = all_issues_by_station.lock().unwrap();
+                for (station_id, issues) in result {
+                    map.entry(station_id).or_default().extend(issues);
+                }
+            }
+        });
+        s.spawn(|_| {
+            let result = get_transitive_level_inconsistencies_by_station(&connected_stations, &stations_and_their_children,custom_rules.max_allowed_ramp_slope.unwrap_or(0.06));
             if !result.is_empty() {
                 let mut map = all_issues_by_station.lock().unwrap();
                 for (station_id, issues) in result {
@@ -518,7 +544,7 @@ fn get_dangling_stop_validation_issues_by_station(connected_stations: &HashMap<S
 }
 
 
-fn get_transitive_level_inconsistencies_by_station(connected_stations: &HashMap<String, Vec<Arc<Stop>>>, stations_and_their_children: &HashMap<String, Vec<Arc<Stop>>>, max_allowed_ramp_slope: f64) -> Vec<PathwayIssue> {
+fn get_transitive_level_inconsistencies_by_station(connected_stations: &HashMap<String, Vec<Arc<Stop>>>, stations_and_their_children: &HashMap<String, Vec<Arc<Stop>>>, max_allowed_ramp_slope: f64) -> HashMap<String,Vec<PathwayIssue>> {
 
     connected_stations
         .par_iter()
@@ -530,31 +556,59 @@ fn get_transitive_level_inconsistencies_by_station(connected_stations: &HashMap<
                 graph_of_station.add_stop(&child);
             }
 
-            let mut issues: Vec<PathwayIssue> = Vec::new();
+            let mut issues_in_station: Vec<PathwayIssue> = Vec::new();
 
             for child in children {
-                let Some(nodes_reachable_by_walkway) = graph_of_station.nodes_reachable_by_walkway.get(&child.id.clone()) else {
+                // A = child.id  (the source stop)
+                // B = a stop reachable from A only via elevator/stairs (no direct walkway from A)
+                // C = a stop reachable from B via a direct walkway
+                // Inconsistency: C is also reachable from A via a direct walkway,
+                // because elevator/stairs should imply a level change that walkways shouldn't bypass.
+
+                let Some(elev_or_stairs_from_a) = graph_of_station.nodes_reachable_by_elevator_or_stairs.get(&child.id) else {
                     continue;
                 };
+                let walkway_from_a = graph_of_station.nodes_reachable_by_walkway.get(&child.id);
 
-                for reachable_node in nodes_reachable_by_walkway {
-                    let Some(nodes_reachable_from_target) = graph_of_station.nodes_reachable_by_walkway.get(reachable_node) else { continue };
+                for b in elev_or_stairs_from_a {
+                    // B must NOT be reachable from A via a direct walkway
+                    if walkway_from_a.is_some_and(|w| w.contains(b)) {
+                        continue;
+                    }
 
-                    for reachable_from_target in nodes_reachable_from_target {
-                        if !nodes_reachable_by_walkway.contains(reachable_from_target) {
-                            let transitive_inconsistency_issue = make_transitive_level_inconsistency_issue(station_id.clone(), "intransitive pathways detected".parse().unwrap());
-                            issues.push(transitive_inconsistency_issue);
+                    let Some(walkway_from_b) = graph_of_station.nodes_reachable_by_walkway.get(b) else { continue };
+
+                    for c in walkway_from_b {
+                        // C must be reachable from A via a direct walkway (the inconsistency)
+                        if walkway_from_a.is_some_and(|w| w.contains(c)) {
+                            let message:String = format!("stops {},{},{} form an intransitive triad", child.id, b, c);
+
+                            let transitive_inconsistency_issue = make_transitive_level_inconsistency_issue(station_id.clone(), message,[child.id.clone(), b.clone(), c.clone()].map(String::from).to_vec());
+                            issues_in_station.push(transitive_inconsistency_issue);
                         }
                     }
                 }
+
+
             }
 
-            if issues.is_empty() { None } else { Some(issues) }
+            // Deduplicate: keep only one issue per unique set of involved stops.
+            // The algorithm may detect the same triad from different starting points,
+            // producing rotated versions like (A,B,C), (B,C,A), (C,A,B).
+            // We normalize by sorting the involved stop IDs and keeping the first occurrence.
+            let mut seen_triads: HashSet<Vec<String>> = HashSet::new();
+            let unique_issues: Vec<PathwayIssue> = issues_in_station
+                .into_iter()
+                .filter(|issue| {
+                    let mut canonical = issue.involved_stop_ids.clone();
+                    canonical.sort();
+                    seen_triads.insert(canonical)
+                })
+                .collect();
+            if unique_issues.is_empty() { None } else { Some((station_id.clone(), unique_issues)) }
         })
-        .flatten()
         .collect()
 }
-
 
 
 fn get_locked_platform_validation_issues_by_station(connected_stations: &HashMap<String, Vec<Arc<Stop>>>, stations_and_their_children: &HashMap<String, Vec<Arc<Stop>>>, max_allowed_ramp_slope: f64)->HashMap<String,Vec<PathwayIssue>>{
@@ -1042,9 +1096,9 @@ fn make_locked_platform_issue(parent_stop_id:String,locked_stop_id:String)->Path
     PathwayIssue::new_stop_issue(base_issue,involved_stops)
 }
 
-fn make_transitive_level_inconsistency_issue(station_id:String, message:String) ->PathwayIssue {
+fn make_transitive_level_inconsistency_issue(station_id:String, message:String,involved_stops:Vec<String>) ->PathwayIssue {
     let base_issue = Issue::new(Severity::Warning,PathwaysImpliesTransitiveInconsistency, &station_id).details(message.as_str()).details(message.as_str());
-    let involved_stops = vec![station_id];
+    let involved_stops = involved_stops;
     PathwayIssue::new_stop_issue(base_issue,involved_stops)
 }
 

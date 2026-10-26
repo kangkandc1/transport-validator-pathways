@@ -15,12 +15,21 @@
         #station-select { padding: 6px 10px; font-size: 14px; border-radius: 4px; border: none; min-width: 250px; }
         #main { display: flex; flex: 1; overflow: hidden; }
         #issues-panel { width: 350px; flex-shrink: 0; background: #f5f6fa; border-right: 1px solid #dcdde1; display: flex; flex-direction: column; overflow: hidden; }
-        #issues-panel h2 { padding: 15px; font-size: 16px; background: #ecf0f1; border-bottom: 1px solid #dcdde1; }
+        #issues-panel h2 { padding: 15px 15px 8px 15px; font-size: 16px; background: #ecf0f1; border-bottom: 1px solid #dcdde1; }
+        #severity-legend { padding: 4px 15px 8px 15px; background: #ecf0f1; border-bottom: 1px solid #dcdde1; font-size: 11px; display: flex; gap: 12px; align-items: center; }
+        #severity-legend .legend-entry { display: flex; align-items: center; gap: 4px; }
+        #severity-legend .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+        #severity-legend .legend-dot.error { background: #e74c3c; }
+        #severity-legend .legend-dot.warning { background: #f1c40f; }
         #issues-list { flex: 1; overflow-y: auto; padding: 10px; }
         .issue-card { background: white; border: 1px solid #dcdde1; border-radius: 6px; padding: 12px; margin-bottom: 10px; cursor: pointer; transition: all 0.2s; }
         .issue-card:hover { border-color: #3498db; box-shadow: 0 2px 8px rgba(52,152,219,0.15); }
         .issue-card.active { border-color: #e74c3c; background: #fdf0ef; box-shadow: 0 0 0 2px rgba(231,76,60,0.3); }
-        .issue-type { font-weight: 700; font-size: 14px; margin-bottom: 6px; color: #2c3e50; }
+        .issue-type { font-weight: 700; font-size: 14px; margin-bottom: 6px; color: #2c3e50; display: flex; align-items: center; gap: 6px; }
+        .severity-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+        .severity-dot.error { background: #e74c3c; }
+        .severity-dot.warning { background: #f1c40f; }
+        .severity-dot.information { background: #3498db; }
         .issue-pathway { font-size: 12px; color: #7f8c8d; margin-bottom: 4px; }
         .issue-stops { font-size: 12px; color: #7f8c8d; }
         .issue-stops span { display: inline-block; background: #ecf0f1; padding: 2px 6px; border-radius: 3px; margin: 1px; font-family: monospace; font-size: 11px; }
@@ -47,6 +56,10 @@
     <div id="main">
         <div id="issues-panel">
             <h2>Issues</h2>
+            <div id="severity-legend">
+                <span class="legend-entry"><span class="legend-dot error"></span> Error</span>
+                <span class="legend-entry"><span class="legend-dot warning"></span> Warning</span>
+            </div>
             <div id="issues-list"><p class="no-issues">Select a station to view issues.</p></div>
         </div>
         <div id="map-container">
@@ -644,8 +657,10 @@
                 const stopsStr = issue.involved_stop_ids && issue.involved_stop_ids.length > 0
                     ? `<div class="issue-stops">Stops: ${issue.involved_stop_ids.map(id => `<span>${id}</span>`).join(' ')}</div>`
                     : '';
+                const sev = issue.severity || 'Error';
+                const dotClass = sev.toLowerCase();
                 return `<div class="issue-card" data-index="${idx}" onclick="onIssueClick(${idx})">
-                    <div class="issue-type">⚠️ ${issue.issue_type}</div>
+                    <div class="issue-type"><span class="severity-dot ${dotClass}"></span>${issue.issue_type}</div>
                     ${pathwayStr}${stopsStr}
                 </div>`;
             }).join('');

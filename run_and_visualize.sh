@@ -4,13 +4,13 @@ set -euo pipefail
 # Validate pathways and open the visualizer.
 # Usage: ./run_and_visualize.sh [INPUT_DIR] [CUSTOM_RULES]
 
-INPUT="${1:-test_data/pathways/pathways_multiple_issues}"
+INPUT="${1:-test_data/pathways/aachen_gtfs}"
 CUSTOM_RULES="${2:-test_data/custom_rules/custom_rules.yml}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PORT=8999
 
 echo "=== Running validator ==="
-cargo run -- --input "$INPUT" --custom-rules "$CUSTOM_RULES" > result.json
+cargo run --release -- --input "$INPUT" --custom-rules "$CUSTOM_RULES" > result.json
 echo "=== Validator finished, result saved to result.json ==="
 
 echo "=== Starting local web server on port $PORT ==="
