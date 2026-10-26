@@ -1,0 +1,4 @@
+level_id,level_index,level_name
+L0,0,Level 0
+L1,1,Level 1
+L2,2,Level 2

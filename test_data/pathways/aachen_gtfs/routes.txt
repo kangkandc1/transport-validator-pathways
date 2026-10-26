@@ -1,0 +1,3 @@
+route_id,agency_id,route_short_name,route_long_name,route_type
+RE99,IMG,RE 99,Aachen Hbf - Aachen Schanz,2
+RB98,IMG,RB 98,Aachen Schanz - Aachen Hbf,2
