@@ -304,7 +304,20 @@ pub fn validate_by_station(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRul
     // since rayon::scope spawns return () not JoinHandle.
     use std::sync::Mutex;
     let all_issues_by_station = Mutex::new(HashMap::<String, Vec<PathwayIssue>>::new());
+    let wheelchair_accessibility_index = Mutex::new(HashMap::<String, f64>::new());
     rayon::scope(|s| {
+        s.spawn(|_| {
+            let result = get_wheelchair_accessibility_index_by_station(
+                &connected_stations,
+                &stations_and_their_children,
+                custom_rules.max_allowed_ramp_slope.unwrap_or(0.06),
+                custom_rules.require_walkway_slope,
+            );
+            if !result.is_empty() {
+                let mut map = wheelchair_accessibility_index.lock().unwrap();
+                map.extend(result);
+            }
+        });
         s.spawn(|_| {
             let result = get_dangling_stop_validation_issues_by_station(&connected_stations, &stations_and_their_children);
             if !result.is_empty() {
@@ -379,7 +392,11 @@ pub fn validate_by_station(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRul
         });
     });
     let all_issues_by_station = all_issues_by_station.into_inner().unwrap();
+    let wheelchair_accessibility_index = wheelchair_accessibility_index.into_inner().unwrap();
 
+    if let Ok(json) = serde_json::to_string_pretty(&wheelchair_accessibility_index) {
+        let _ = std::fs::write("station_ranking.json", &json);
+    }
 
     // Build StationWithPathwayIssue for each station that has issues
     let mut stations_and_problems: Vec<StationWithPathwayIssue> = Vec::new();
@@ -883,6 +900,46 @@ fn get_all_island_stops_in_connected_station(
             } else {
                 Some((station_id.clone(), islands))
             }
+        })
+        .collect()
+}
+
+fn get_wheelchair_accessibility_index_by_station(
+    connected_stations: &HashMap<String, Vec<Arc<Stop>>>,
+    stations_and_their_children: &HashMap<String, Vec<Arc<Stop>>>,
+    max_allowed_ramp_slope: f64,
+    require_walkway_slope: bool,
+) -> HashMap<String, f64> {
+    connected_stations
+        .par_iter()
+        .filter_map(|(station_id, _connected_children)| {
+            let children = stations_and_their_children.get(station_id)?;
+
+            let (platforms, entrances) =
+                get_platforms_and_boarding_areas_and_entrances_for_station(children);
+            let total_platforms = platforms.len();
+            if total_platforms == 0 {
+                return None;
+            }
+
+            let mut graph_of_station =
+                PathwayDirectedGraph::new(max_allowed_ramp_slope, require_walkway_slope);
+            for child in children {
+                graph_of_station.add_stop(&child);
+            }
+
+            let reachable = platforms
+                .iter()
+                .filter(|p| {
+                    stop_reachable_from_al_least_one_entrance_for_wheelchair_users(
+                        p,
+                        &entrances,
+                        &graph_of_station,
+                    )
+                })
+                .count();
+
+            Some((station_id.clone(), reachable as f64 / total_platforms as f64))
         })
         .collect()
 }
