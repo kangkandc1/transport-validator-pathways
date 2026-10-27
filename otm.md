@@ -34,7 +34,6 @@ Here is a human friendly list of them :
 
 | check name                       | Severity         | Description                                                                                                                                                                              |
 | -------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|
 | DistanceBetweenParentAndChildTooHigh | Warning      | Distance between stops exceed a threshold provided by default                                                                                                                            |
 | PathwayModeNotCompatibleWithLevels| Error           | Pathway modes Elevator, Stairs and Escalator imply a change in levels. The check is applied when levels.txt is present                                                                   |
 |  PathwaySpanTooHigh              | Error            | This distance between two stops connected by the pathway exceed an user provided threshold                                                                                               |
