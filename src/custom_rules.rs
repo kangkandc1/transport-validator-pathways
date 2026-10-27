@@ -18,6 +18,13 @@ pub struct CustomRules {
     #[serde(default)]
     pub only_pathway_validation: bool,
     pub max_allowed_ramp_slope: Option<f64>,
+    #[serde(default = "default_true")]
+    pub require_walkway_slope: bool,
+
+}
+
+fn default_true() -> bool {
+    true
 }
 
 pub fn custom_rules(file_path: Option<String>) -> CustomRules {

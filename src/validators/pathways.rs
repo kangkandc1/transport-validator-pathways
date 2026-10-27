@@ -33,8 +33,9 @@ impl  PathwayIssue {
 
 impl Serialize for PathwayIssue {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("PathwayIssue", 3)?;
+        let mut state = serializer.serialize_struct("PathwayIssue", 4)?;
         state.serialize_field("issue_type", &self.base_issue.issue_type)?;
+        state.serialize_field("severity", &self.base_issue.severity)?;
         state.serialize_field("pathway_id", &self.pathway_id)?;
         state.serialize_field("involved_stop_ids", &self.involved_stop_ids)?;
 
@@ -100,13 +101,15 @@ pub struct PathwayDirectedGraph{
     adjacent_nodes: HashMap<String,Vec<String>>,
     adjacent_nodes_wheelchair_accessible : HashMap<String,Vec<String>>,
     nodes_reachable_by_walkway : HashMap<String,HashSet<String>>,
-    max_slope_ramp: f64
+    nodes_reachable_by_elevator_or_stairs : HashMap<String,HashSet<String>>,
+    max_slope_ramp: f64,
+    require_walkway_slope : bool
 }
 
 impl PathwayDirectedGraph {
 
-    pub fn new(max_slope_ramp: f64) -> Self {
-        PathwayDirectedGraph{adjacent_nodes: HashMap::new(), adjacent_nodes_wheelchair_accessible: Default::default(), nodes_reachable_by_walkway: Default::default(), max_slope_ramp}
+    pub fn new(max_slope_ramp: f64, require_walkway_slope: bool) -> Self {
+        PathwayDirectedGraph{adjacent_nodes: HashMap::new(), adjacent_nodes_wheelchair_accessible: Default::default(), nodes_reachable_by_walkway: Default::default(), nodes_reachable_by_elevator_or_stairs: Default::default(), max_slope_ramp, require_walkway_slope }
     }
     pub fn add_stop(&mut self, stop: &Stop) {
         // Ensure the stop exists as a node even if it has no pathways.
@@ -114,8 +117,12 @@ impl PathwayDirectedGraph {
         let outgoing_stepless = self.adjacent_nodes_wheelchair_accessible.entry(stop.id.clone()).or_default();
         let walkable_without_assitannce = self.nodes_reachable_by_walkway.entry(stop.id.clone()).or_default();
         outgoing.extend(stop.pathways.iter().map(|p| p.to_stop_id.clone()));
-        outgoing_stepless.extend(stop.pathways.iter().filter(|p| Self::is_pathway_accessible_by_wheelchair(p, self.max_slope_ramp)).map(|p| p.to_stop_id.clone()));
+        let max_slope = self.max_slope_ramp;
+        let require_walkway_slope = self.require_walkway_slope;
+        outgoing_stepless.extend(stop.pathways.iter().filter(|p| PathwayDirectedGraph::is_pathway_accessible_by_wheelchair_static(p, max_slope, require_walkway_slope)).map(|p| p.to_stop_id.clone()));
         walkable_without_assitannce.extend(stop.pathways.iter().filter(|p| Self::is_pathway_walkable_without_assistance(p)).map(|p| p.to_stop_id.clone()));
+        let elev_or_stairs = self.nodes_reachable_by_elevator_or_stairs.entry(stop.id.clone()).or_default();
+        elev_or_stairs.extend(stop.pathways.iter().filter(|p| Self::is_pathway_elevator_or_stairs(p)).map(|p| p.to_stop_id.clone()));
 
         // Add the reverse edge for bidirectional pathways.
         for pathway in &stop.pathways {
@@ -125,7 +132,7 @@ impl PathwayDirectedGraph {
                     .or_default()
                     .push(stop.id.clone());
 
-                if Self::is_pathway_accessible_by_wheelchair(&pathway, self.max_slope_ramp) {
+                if self.is_pathway_accessible_by_wheelchair(&pathway, self.max_slope_ramp) {
                     self.adjacent_nodes_wheelchair_accessible
                         .entry(pathway.to_stop_id.clone())
                         .or_default()
@@ -134,6 +141,12 @@ impl PathwayDirectedGraph {
 
                 if Self::is_pathway_walkable_without_assistance(&pathway) {
                     self.nodes_reachable_by_walkway.entry(pathway.to_stop_id.clone())
+                    .or_default()
+                        .insert(stop.id.clone());
+                }
+
+                if Self::is_pathway_elevator_or_stairs(&pathway) {
+                    self.nodes_reachable_by_elevator_or_stairs.entry(pathway.to_stop_id.clone())
                     .or_default()
                         .insert(stop.id.clone());
                 }
@@ -203,20 +216,40 @@ impl PathwayDirectedGraph {
         false
     }
 
-    fn is_pathway_accessible_by_wheelchair(pathway: &Pathway, max_slope_ramp: f64) -> bool {
+    fn is_pathway_accessible_by_wheelchair_static(pathway: &Pathway, max_slope_ramp: f64, require_walkway_slope: bool) -> bool {
+        if require_walkway_slope {
+            return match pathway.mode{
+                PathwayMode::Elevator => true,
+                PathwayMode::Walkway | PathwayMode::MovingSidewalk => pathway
+                    .max_slope
+                    .is_some_and(|slope| slope.abs() <= max_slope_ramp as f32),
+                _ => false,
+            }
+        }
         match pathway.mode{
             PathwayMode::Elevator => true,
             PathwayMode::Walkway | PathwayMode::MovingSidewalk => pathway
                 .max_slope
-                .is_some_and(|slope| slope.abs() < max_slope_ramp as f32),
+                .is_none_or(|slope| slope.abs() <= max_slope_ramp as f32),
             _ => false,
             }
+    }
+
+    fn is_pathway_accessible_by_wheelchair(&self, pathway: &Pathway, max_slope_ramp: f64) -> bool {
+        Self::is_pathway_accessible_by_wheelchair_static(pathway, max_slope_ramp, self.require_walkway_slope)
     }
 
     fn is_pathway_walkable_without_assistance(pathway: &Pathway) -> bool {
         matches ! (
             pathway.mode,
             PathwayMode::Walkway| PathwayMode::MovingSidewalk
+        )
+    }
+
+    fn is_pathway_elevator_or_stairs(pathway: &Pathway) -> bool {
+        matches ! (
+            pathway.mode,
+            PathwayMode::Elevator| PathwayMode::Stairs| PathwayMode::Escalator
         )
     }
 
@@ -271,7 +304,20 @@ pub fn validate_by_station(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRul
     // since rayon::scope spawns return () not JoinHandle.
     use std::sync::Mutex;
     let all_issues_by_station = Mutex::new(HashMap::<String, Vec<PathwayIssue>>::new());
+    let wheelchair_accessibility_index = Mutex::new(HashMap::<String, f64>::new());
     rayon::scope(|s| {
+        s.spawn(|_| {
+            let result = get_wheelchair_accessibility_index_by_station(
+                &connected_stations,
+                &stations_and_their_children,
+                custom_rules.max_allowed_ramp_slope.unwrap_or(0.06),
+                custom_rules.require_walkway_slope,
+            );
+            if !result.is_empty() {
+                let mut map = wheelchair_accessibility_index.lock().unwrap();
+                map.extend(result);
+            }
+        });
         s.spawn(|_| {
             let result = get_dangling_stop_validation_issues_by_station(&connected_stations, &stations_and_their_children);
             if !result.is_empty() {
@@ -282,7 +328,7 @@ pub fn validate_by_station(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRul
             }
         });
         s.spawn(|_| {
-            let result = get_locked_platform_validation_issues_by_station(&connected_stations, &stations_and_their_children, custom_rules.max_allowed_ramp_slope.unwrap_or(0.06));
+            let result = get_transitive_level_inconsistencies_by_station(&connected_stations, &stations_and_their_children,custom_rules.max_allowed_ramp_slope.unwrap_or(0.06), custom_rules.require_walkway_slope);
             if !result.is_empty() {
                 let mut map = all_issues_by_station.lock().unwrap();
                 for (station_id, issues) in result {
@@ -291,7 +337,16 @@ pub fn validate_by_station(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRul
             }
         });
         s.spawn(|_| {
-            let result = get_falsely_labelled_wheelchair_accessible_issues_by_station(&connected_stations, &stations_and_their_children, custom_rules.max_allowed_ramp_slope.unwrap_or(0.06));
+            let result = get_locked_platform_validation_issues_by_station(&connected_stations, &stations_and_their_children, custom_rules.max_allowed_ramp_slope.unwrap_or(0.06), custom_rules.require_walkway_slope);
+            if !result.is_empty() {
+                let mut map = all_issues_by_station.lock().unwrap();
+                for (station_id, issues) in result {
+                    map.entry(station_id).or_default().extend(issues);
+                }
+            }
+        });
+        s.spawn(|_| {
+            let result = get_falsely_labelled_wheelchair_accessible_issues_by_station(&connected_stations, &stations_and_their_children, custom_rules.max_allowed_ramp_slope.unwrap_or(0.06), custom_rules.require_walkway_slope);
             if !result.is_empty() {
                 let mut map = all_issues_by_station.lock().unwrap();
                 for (station_id, issues) in result {
@@ -337,7 +392,11 @@ pub fn validate_by_station(gtfs: &gtfs_structures::Gtfs,custom_rules: &CustomRul
         });
     });
     let all_issues_by_station = all_issues_by_station.into_inner().unwrap();
+    let wheelchair_accessibility_index = wheelchair_accessibility_index.into_inner().unwrap();
 
+    if let Ok(json) = serde_json::to_string_pretty(&wheelchair_accessibility_index) {
+        let _ = std::fs::write("station_ranking.json", &json);
+    }
 
     // Build StationWithPathwayIssue for each station that has issues
     let mut stations_and_problems: Vec<StationWithPathwayIssue> = Vec::new();
@@ -518,47 +577,75 @@ fn get_dangling_stop_validation_issues_by_station(connected_stations: &HashMap<S
 }
 
 
-fn get_transitive_level_inconsistencies_by_station(connected_stations: &HashMap<String, Vec<Arc<Stop>>>, stations_and_their_children: &HashMap<String, Vec<Arc<Stop>>>, max_allowed_ramp_slope: f64) -> Vec<PathwayIssue> {
+fn get_transitive_level_inconsistencies_by_station(connected_stations: &HashMap<String, Vec<Arc<Stop>>>, stations_and_their_children: &HashMap<String, Vec<Arc<Stop>>>, max_allowed_ramp_slope: f64, require_walkway_slope: bool) -> HashMap<String,Vec<PathwayIssue>> {
 
     connected_stations
         .par_iter()
         .filter_map(|(station_id, _connected_children)| {
             let children = stations_and_their_children.get(station_id)?;
 
-            let mut graph_of_station = PathwayDirectedGraph::new(max_allowed_ramp_slope);
+            let mut graph_of_station = PathwayDirectedGraph::new(max_allowed_ramp_slope, require_walkway_slope);
             for child in children {
                 graph_of_station.add_stop(&child);
             }
 
-            let mut issues: Vec<PathwayIssue> = Vec::new();
+            let mut issues_in_station: Vec<PathwayIssue> = Vec::new();
 
             for child in children {
-                let Some(nodes_reachable_by_walkway) = graph_of_station.nodes_reachable_by_walkway.get(&child.id.clone()) else {
+                // A = child.id  (the source stop)
+                // B = a stop reachable from A only via elevator/stairs (no direct walkway from A)
+                // C = a stop reachable from B via a direct walkway
+                // Inconsistency: C is also reachable from A via a direct walkway,
+                // because elevator/stairs should imply a level change that walkways shouldn't bypass.
+
+                let Some(elev_or_stairs_from_a) = graph_of_station.nodes_reachable_by_elevator_or_stairs.get(&child.id) else {
                     continue;
                 };
+                let walkway_from_a = graph_of_station.nodes_reachable_by_walkway.get(&child.id);
 
-                for reachable_node in nodes_reachable_by_walkway {
-                    let Some(nodes_reachable_from_target) = graph_of_station.nodes_reachable_by_walkway.get(reachable_node) else { continue };
+                for b in elev_or_stairs_from_a {
+                    // B must NOT be reachable from A via a direct walkway
+                    if walkway_from_a.is_some_and(|w| w.contains(b)) {
+                        continue;
+                    }
 
-                    for reachable_from_target in nodes_reachable_from_target {
-                        if !nodes_reachable_by_walkway.contains(reachable_from_target) {
-                            let transitive_inconsistency_issue = make_transitive_level_inconsistency_issue(station_id.clone(), "intransitive pathways detected".parse().unwrap());
-                            issues.push(transitive_inconsistency_issue);
+                    let Some(walkway_from_b) = graph_of_station.nodes_reachable_by_walkway.get(b) else { continue };
+
+                    for c in walkway_from_b {
+                        // C must be reachable from A via a direct walkway (the inconsistency)
+                        if walkway_from_a.is_some_and(|w| w.contains(c)) {
+                            let message:String = format!("stops {},{},{} form an intransitive triad", child.id, b, c);
+
+                            let transitive_inconsistency_issue = make_transitive_level_inconsistency_issue(station_id.clone(), message,[child.id.clone(), b.clone(), c.clone()].map(String::from).to_vec());
+                            issues_in_station.push(transitive_inconsistency_issue);
                         }
                     }
                 }
+
+
             }
 
-            if issues.is_empty() { None } else { Some(issues) }
+            // Deduplicate: keep only one issue per unique set of involved stops.
+            // The algorithm may detect the same triad from different starting points,
+            // producing rotated versions like (A,B,C), (B,C,A), (C,A,B).
+            // We normalize by sorting the involved stop IDs and keeping the first occurrence.
+            let mut seen_triads: HashSet<Vec<String>> = HashSet::new();
+            let unique_issues: Vec<PathwayIssue> = issues_in_station
+                .into_iter()
+                .filter(|issue| {
+                    let mut canonical = issue.involved_stop_ids.clone();
+                    canonical.sort();
+                    seen_triads.insert(canonical)
+                })
+                .collect();
+            if unique_issues.is_empty() { None } else { Some((station_id.clone(), unique_issues)) }
         })
-        .flatten()
         .collect()
 }
 
 
-
-fn get_locked_platform_validation_issues_by_station(connected_stations: &HashMap<String, Vec<Arc<Stop>>>, stations_and_their_children: &HashMap<String, Vec<Arc<Stop>>>, max_allowed_ramp_slope: f64)->HashMap<String,Vec<PathwayIssue>>{
-    let locked = get_all_island_stops_in_connected_station(connected_stations, stations_and_their_children, max_allowed_ramp_slope);
+fn get_locked_platform_validation_issues_by_station(connected_stations: &HashMap<String, Vec<Arc<Stop>>>, stations_and_their_children: &HashMap<String, Vec<Arc<Stop>>>, max_allowed_ramp_slope: f64, require_walkway_slope: bool)->HashMap<String,Vec<PathwayIssue>>{
+    let locked = get_all_island_stops_in_connected_station(connected_stations, stations_and_their_children, max_allowed_ramp_slope, require_walkway_slope);
     if locked.is_empty() {
         return HashMap::new()
     }
@@ -601,8 +688,8 @@ fn get_pathways_with_invalid_stop_references(gtfs:&Gtfs)->Vec<PathwayIssue>{
 
 }
 
-fn get_falsely_labelled_wheelchair_accessible_issues_by_station(connected_stations: &HashMap<String, Vec<Arc<Stop>>>, stations_and_their_children: &HashMap<String, Vec<Arc<Stop>>>, max_allowed_ramp_slope: f64)->HashMap<String,Vec<PathwayIssue>>{
-    let mislabeled_stops = get_all_falsely_accessible_labelled__stops_in_connected_station(connected_stations, stations_and_their_children, max_allowed_ramp_slope);
+fn get_falsely_labelled_wheelchair_accessible_issues_by_station(connected_stations: &HashMap<String, Vec<Arc<Stop>>>, stations_and_their_children: &HashMap<String, Vec<Arc<Stop>>>, max_allowed_ramp_slope: f64, require_walkway_slope: bool)->HashMap<String,Vec<PathwayIssue>>{
+    let mislabeled_stops = get_all_falsely_accessible_labelled__stops_in_connected_station(connected_stations, stations_and_their_children, max_allowed_ramp_slope, require_walkway_slope);
     if mislabeled_stops.is_empty() {
         return HashMap::new()
     }
@@ -785,6 +872,7 @@ fn get_all_island_stops_in_connected_station(
     connected_stations: &HashMap<String, Vec<Arc<Stop>>>,
     stations_and_their_children: &HashMap<String, Vec<Arc<Stop>>>,
     max_allowed_ramp_slope: f64,
+    require_walkway_slope: bool,
 ) -> HashMap<String, Vec<Arc<Stop>>> {
 
     connected_stations
@@ -793,7 +881,7 @@ fn get_all_island_stops_in_connected_station(
             let children = stations_and_their_children.get(station_id)?;
 
             let platforms_entrances_of_station = get_platforms_and_boarding_areas_and_entrances_for_station(children);
-            let mut graph_of_station = PathwayDirectedGraph::new(max_allowed_ramp_slope);
+            let mut graph_of_station = PathwayDirectedGraph::new(max_allowed_ramp_slope, require_walkway_slope);
             for child in children {
                 graph_of_station.add_stop(&child);
             }
@@ -816,10 +904,51 @@ fn get_all_island_stops_in_connected_station(
         .collect()
 }
 
+fn get_wheelchair_accessibility_index_by_station(
+    connected_stations: &HashMap<String, Vec<Arc<Stop>>>,
+    stations_and_their_children: &HashMap<String, Vec<Arc<Stop>>>,
+    max_allowed_ramp_slope: f64,
+    require_walkway_slope: bool,
+) -> HashMap<String, f64> {
+    connected_stations
+        .par_iter()
+        .filter_map(|(station_id, _connected_children)| {
+            let children = stations_and_their_children.get(station_id)?;
+
+            let (platforms, entrances) =
+                get_platforms_and_boarding_areas_and_entrances_for_station(children);
+            let total_platforms = platforms.len();
+            if total_platforms == 0 {
+                return None;
+            }
+
+            let mut graph_of_station =
+                PathwayDirectedGraph::new(max_allowed_ramp_slope, require_walkway_slope);
+            for child in children {
+                graph_of_station.add_stop(&child);
+            }
+
+            let reachable = platforms
+                .iter()
+                .filter(|p| {
+                    stop_reachable_from_al_least_one_entrance_for_wheelchair_users(
+                        p,
+                        &entrances,
+                        &graph_of_station,
+                    )
+                })
+                .count();
+
+            Some((station_id.clone(), reachable as f64 / total_platforms as f64))
+        })
+        .collect()
+}
+
 fn get_all_falsely_accessible_labelled__stops_in_connected_station(
     connected_stations: &HashMap<String, Vec<Arc<Stop>>>,
     stations_and_their_children: &HashMap<String, Vec<Arc<Stop>>>,
     max_allowed_ramp_slope: f64,
+    require_walkway_slope: bool,
 ) -> HashMap<String, Vec<Arc<Stop>>> {
 
     connected_stations
@@ -828,7 +957,7 @@ fn get_all_falsely_accessible_labelled__stops_in_connected_station(
             let children = stations_and_their_children.get(station_id)?;
 
             let platforms_entrances_of_station = get_platforms_and_boarding_areas_and_entrances_for_station(children);
-            let mut graph_of_station = PathwayDirectedGraph::new(max_allowed_ramp_slope);
+            let mut graph_of_station = PathwayDirectedGraph::new(max_allowed_ramp_slope, require_walkway_slope);
             for child in children {
                 graph_of_station.add_stop(&child);
             }
@@ -1042,9 +1171,9 @@ fn make_locked_platform_issue(parent_stop_id:String,locked_stop_id:String)->Path
     PathwayIssue::new_stop_issue(base_issue,involved_stops)
 }
 
-fn make_transitive_level_inconsistency_issue(station_id:String, message:String) ->PathwayIssue {
+fn make_transitive_level_inconsistency_issue(station_id:String, message:String,involved_stops:Vec<String>) ->PathwayIssue {
     let base_issue = Issue::new(Severity::Warning,PathwaysImpliesTransitiveInconsistency, &station_id).details(message.as_str()).details(message.as_str());
-    let involved_stops = vec![station_id];
+    let involved_stops = involved_stops;
     PathwayIssue::new_stop_issue(base_issue,involved_stops)
 }
 
@@ -1493,7 +1622,7 @@ fn test_get_map_of_stations_with_locked_platforms(){
     let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
     let connected_stations = get_unique_stations_connected_by_pathways(&gtfs);
     let stations_and_their_children = get_stations_and_their_children(&gtfs);
-    let stations_with_island_stops = get_all_island_stops_in_connected_station(&connected_stations, &stations_and_their_children, 0.06);
+    let stations_with_island_stops = get_all_island_stops_in_connected_station(&connected_stations, &stations_and_their_children, 0.06, true);
     assert_eq!(stations_with_island_stops.keys().len(), 2);
     assert_eq!(stations_with_island_stops.get("station_A").unwrap().len(), 1);
     assert_eq!(stations_with_island_stops.get("station_B").unwrap().len(), 1);
@@ -1520,7 +1649,7 @@ fn test_validation_for_pathways_toouching_stations_with_boarding_ares(){
 fn test_creation_of_directed_graph(){
     let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/pathways_multiple_issues").unwrap();
 
-    let mut graph = PathwayDirectedGraph::new(0.06);
+    let mut graph = PathwayDirectedGraph::new(0.06, true);
     for stop in gtfs.stops.values() {
         graph.add_stop(&stop);
     }
@@ -1537,7 +1666,7 @@ fn test_get_falsely_labelled_accessible_stops(){
 
     let connected_stations = get_unique_stations_connected_by_pathways(&gtfs);
     let stations_and_their_children = get_stations_and_their_children(&gtfs);
-    let falsely_labelled = get_all_falsely_accessible_labelled__stops_in_connected_station(&connected_stations, &stations_and_their_children, 0.06);
+    let falsely_labelled = get_all_falsely_accessible_labelled__stops_in_connected_station(&connected_stations, &stations_and_their_children, 0.06, true);
     assert_eq!(falsely_labelled.keys().len(), 1);
 
 }
@@ -1563,6 +1692,30 @@ fn test_stop_access_read_correctly(){
     let stops = gtfs.stops;
     let example_stop = stops.get("station_A_entrance_1").unwrap();
     assert_eq!(example_stop.stop_access,StopAccess::NotDirectlyAccessible)
+
+
+}
+
+#[test]
+fn test_debug(){
+    let gtfs = gtfs_structures::Gtfs::new("test_data/pathways/mdb").unwrap();
+    let connected_stations = get_unique_stations_connected_by_pathways(&gtfs);
+    let stations_and_their_children = get_stations_and_their_children(&gtfs);
+    let children = stations_and_their_children.get("de:12065:900203898");
+
+    let platforms_entrances_of_station = get_platforms_and_boarding_areas_and_entrances_for_station(children.unwrap());
+    let mut graph_of_station = PathwayDirectedGraph::new(0.06, true);
+    for child in children.unwrap() {
+        graph_of_station.add_stop(&child);
+    }
+
+    for nodes in graph_of_station.adjacent_nodes_wheelchair_accessible{
+        println!("{:#?}", nodes);
+    }
+
+    for nodes in graph_of_station.adjacent_nodes{
+        println!("{:#?}", nodes);
+    }
 
 
 }

@@ -1,0 +1,2 @@
+feed_publisher_name,feed_publisher_url,feed_lang,feed_start_date,feed_end_date,feed_version
+Imaginary Rail Aachen,https://example.com,de,20261001,20261231,1.0

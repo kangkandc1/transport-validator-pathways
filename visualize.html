@@ -14,13 +14,38 @@
         #header h1 { font-size: 18px; white-space: nowrap; }
         #station-select { padding: 6px 10px; font-size: 14px; border-radius: 4px; border: none; min-width: 250px; }
         #main { display: flex; flex: 1; overflow: hidden; }
-        #issues-panel { width: 350px; flex-shrink: 0; background: #f5f6fa; border-right: 1px solid #dcdde1; display: flex; flex-direction: column; overflow: hidden; }
-        #issues-panel h2 { padding: 15px; font-size: 16px; background: #ecf0f1; border-bottom: 1px solid #dcdde1; }
+        #issues-panel { width: 420px; flex-shrink: 0; background: #f5f6fa; border-right: 1px solid #dcdde1; display: flex; flex-direction: column; overflow: hidden; }
+        #issues-panel h2 { padding: 15px 15px 8px 15px; font-size: 16px; background: #ecf0f1; border-bottom: 1px solid #dcdde1; }
+        #severity-legend { padding: 4px 15px 8px 15px; background: #ecf0f1; border-bottom: 1px solid #dcdde1; font-size: 11px; display: flex; gap: 12px; align-items: center; }
+        #severity-legend .legend-entry { display: flex; align-items: center; gap: 4px; }
+        #severity-legend .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+        #severity-legend .legend-dot.error { background: #e74c3c; }
+        #severity-legend .legend-dot.warning { background: #f1c40f; }
         #issues-list { flex: 1; overflow-y: auto; padding: 10px; }
+        #rankings-table { flex: 1; overflow-y: auto; }
+        #rankings-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        #rankings-table th { position: sticky; top: 0; background: #2c3e50; color: white; padding: 8px 12px; text-align: left; z-index: 1; }
+        #rankings-table td { padding: 6px 12px; border-bottom: 1px solid #dcdde1; }
+        #rankings-table tr:hover td { background: #d5f5e3; cursor: pointer; }
+        #rankings-table .rank { text-align: right; padding-right: 10px; width: 40px; }
+        #rankings-table .station-id { font-family: monospace; font-size: 12px; }
+        #rankings-table .bar-cell { width: 100%; }
+        .bar-track { background: #ecf0f1; border-radius: 3px; height: 14px; min-width: 80px; overflow: hidden; }
+        .bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+        .bar-fill.low { background: #e74c3c; }
+        .bar-fill.mid { background: #f39c12; }
+        .bar-fill.high { background: #27ae60; }
+        .index-value { font-size: 11px; color: #7f8c8d; padding-left: 6px; white-space: nowrap; }
+        #rankings-title { padding: 15px 15px 8px 15px; font-size: 16px; background: #ecf0f1; border-bottom: 1px solid #dcdde1; }
+        .rankings-subtitle { padding: 4px 15px 8px 15px; background: #ecf0f1; border-bottom: 1px solid #dcdde1; font-size: 11px; color: #7f8c8d; }
         .issue-card { background: white; border: 1px solid #dcdde1; border-radius: 6px; padding: 12px; margin-bottom: 10px; cursor: pointer; transition: all 0.2s; }
         .issue-card:hover { border-color: #3498db; box-shadow: 0 2px 8px rgba(52,152,219,0.15); }
         .issue-card.active { border-color: #e74c3c; background: #fdf0ef; box-shadow: 0 0 0 2px rgba(231,76,60,0.3); }
-        .issue-type { font-weight: 700; font-size: 14px; margin-bottom: 6px; color: #2c3e50; }
+        .issue-type { font-weight: 700; font-size: 14px; margin-bottom: 6px; color: #2c3e50; display: flex; align-items: center; gap: 6px; }
+        .severity-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+        .severity-dot.error { background: #e74c3c; }
+        .severity-dot.warning { background: #f1c40f; }
+        .severity-dot.information { background: #3498db; }
         .issue-pathway { font-size: 12px; color: #7f8c8d; margin-bottom: 4px; }
         .issue-stops { font-size: 12px; color: #7f8c8d; }
         .issue-stops span { display: inline-block; background: #ecf0f1; padding: 2px 6px; border-radius: 3px; margin: 1px; font-family: monospace; font-size: 11px; }
@@ -46,7 +71,14 @@
     </div>
     <div id="main">
         <div id="issues-panel">
-            <h2>Issues</h2>
+            <h2 id="issues-panel-title">Issues</h2>
+            <div id="rankings-title" style="display:none;">📊 Station Accessibility Ranking</div>
+            <div class="rankings-subtitle" style="display:none;">Wheelchair-reachable platforms / total platforms</div>
+            <div id="severity-legend">
+                <span class="legend-entry"><span class="legend-dot error"></span> Error</span>
+                <span class="legend-entry"><span class="legend-dot warning"></span> Warning</span>
+            </div>
+            <div id="rankings-table" style="display:none;"><p class="no-issues">Loading rankings…</p></div>
             <div id="issues-list"><p class="no-issues">Select a station to view issues.</p></div>
         </div>
         <div id="map-container">
@@ -98,6 +130,7 @@
 
         let currentStation = null;
         let allStations = [];
+        let stationRanking = {}; // station_id -> accessibility index (f64)
         let map;
         let markersById = {};
         let edgesData = [];
@@ -117,9 +150,20 @@
         // --- Load data ---
         async function loadData() {
             try {
-                const response = await fetch('stations_and_issues.json');
-                allStations = await response.json();
+                const [issuesResp, rankingResp] = await Promise.all([
+                    fetch('stations_and_issues.json'),
+                    fetch('station_ranking.json')
+                ]);
+                allStations = await issuesResp.json();
+
+                // station_ranking.json is optional — use empty object if missing
+                if (rankingResp.ok) {
+                    stationRanking = await rankingResp.json();
+                }
+
                 populateDropdown();
+                renderRankingsTable();
+                showRankingsView();
             } catch (err) {
                 document.body.insertAdjacentHTML('afterbegin',
                     `<div class="error-banner">Failed to load stations_and_issues.json: ${err.message}. Make sure the file is in the same directory.</div>`);
@@ -166,6 +210,67 @@
             select.addEventListener('change', () => {
                 searchInput.style.backgroundColor = '';
             });
+        }
+
+        function renderRankingsTable() {
+            const container = document.getElementById('rankings-table');
+            const entries = Object.entries(stationRanking);
+
+            if (entries.length === 0) {
+                container.innerHTML = '<p class="no-issues">No accessibility ranking data available.</p>';
+                return;
+            }
+
+            // Sort highest to lowest
+            entries.sort((a, b) => b[1] - a[1]);
+
+            const rows = entries.map(([stationId, index], i) => {
+                const pct = (index * 100).toFixed(1);
+                let barClass = 'low';
+                if (index >= 0.7) barClass = 'high';
+                else if (index >= 0.3) barClass = 'mid';
+                // Rank number: 1 = best (highest index)
+                const rank = entries.length - i;
+                return `<tr onclick="selectStationFromRanking('${stationId}')">
+                    <td class="rank">${rank}</td>
+                    <td class="station-id">${stationId}</td>
+                    <td class="bar-cell">
+                        <div class="bar-track"><div class="bar-fill ${barClass}" style="width:${pct}%"></div></div>
+                    </td>
+                    <td class="index-value">${pct}%</td>
+                </tr>`;
+            }).join('');
+
+            container.innerHTML = `<table>
+                <thead><tr><th>#</th><th>Station</th><th>Accessibility</th><th></th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>`;
+        }
+
+        function selectStationFromRanking(stationId) {
+            const select = document.getElementById('station-select');
+            select.value = stationId;
+            document.getElementById('station-search').value = '';
+            document.getElementById('station-search').style.backgroundColor = '';
+            onStationChange();
+        }
+
+        function showRankingsView() {
+            document.getElementById('issues-panel-title').style.display = 'none';
+            document.getElementById('severity-legend').style.display = 'none';
+            document.getElementById('issues-list').style.display = 'none';
+            document.getElementById('rankings-title').style.display = '';
+            document.getElementById('rankings-table').style.display = '';
+            document.querySelector('.rankings-subtitle').style.display = '';
+        }
+
+        function showIssuesView() {
+            document.getElementById('issues-panel-title').style.display = '';
+            document.getElementById('severity-legend').style.display = '';
+            document.getElementById('issues-list').style.display = '';
+            document.getElementById('rankings-title').style.display = 'none';
+            document.getElementById('rankings-table').style.display = 'none';
+            document.querySelector('.rankings-subtitle').style.display = 'none';
         }
 
         // --- Map initialization ---
@@ -355,8 +460,10 @@
             const stationId = document.getElementById('station-select').value;
             if (!stationId) {
                 clearAll();
+                showRankingsView();
                 return;
             }
+            showIssuesView();
             currentStation = allStations.find(s => s.station_id === stationId);
             if (map && map.isStyleLoaded()) {
                 renderStation();
@@ -644,8 +751,10 @@
                 const stopsStr = issue.involved_stop_ids && issue.involved_stop_ids.length > 0
                     ? `<div class="issue-stops">Stops: ${issue.involved_stop_ids.map(id => `<span>${id}</span>`).join(' ')}</div>`
                     : '';
+                const sev = issue.severity || 'Error';
+                const dotClass = sev.toLowerCase();
                 return `<div class="issue-card" data-index="${idx}" onclick="onIssueClick(${idx})">
-                    <div class="issue-type">⚠️ ${issue.issue_type}</div>
+                    <div class="issue-type"><span class="severity-dot ${dotClass}"></span>${issue.issue_type}</div>
                     ${pathwayStr}${stopsStr}
                 </div>`;
             }).join('');
