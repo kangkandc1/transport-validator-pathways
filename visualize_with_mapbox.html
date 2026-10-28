@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Station Pathway Issues Visualizer (Mapbox)</title>
+    <script src="https://api.mapbox.com/mapbox-gl-js/v3.10.0/mapbox-gl.js"></script>
+    <link href="https://api.mapbox.com/mapbox-gl-js/v3.10.0/mapbox-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/@turf/turf@7/turf.min.js"></script>
+    <link rel="icon" href="data:," />
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; height: 100vh; display: flex; flex-direction: column; }
+        #header { background: #2c3e50; color: white; padding: 10px 20px; display: flex; align-items: center; gap: 15px; flex-shrink: 0; }
+        #header h1 { font-size: 18px; white-space: nowrap; }
+        #station-select { padding: 6px 10px; font-size: 14px; border-radius: 4px; border: none; min-width: 250px; }
+        #main { display: flex; flex: 1; overflow: hidden; }
+        #issues-panel { width: 420px; flex-shrink: 0; background: #f5f6fa; border-right: 1px solid #dcdde1; display: flex; flex-direction: column; overflow: hidden; }
+        #issues-panel h2 { padding: 15px 15px 8px 15px; font-size: 16px; background: #ecf0f1; border-bottom: 1px solid #dcdde1; }
+        #severity-legend { padding: 4px 15px 8px 15px; background: #ecf0f1; border-bottom: 1px solid #dcdde1; font-size: 11px; display: flex; gap: 12px; align-items: center; }
+        #severity-legend .legend-entry { display: flex; align-items: center; gap: 4px; }
+        #severity-legend .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+        #severity-legend .legend-dot.error { background: #e74c3c; }
+        #severity-legend .legend-dot.warning { background: #f1c40f; }
+        #issues-list { flex: 1; overflow-y: auto; padding: 10px; }
+        #rankings-table { flex: 1; overflow-y: auto; }
+        #rankings-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        #rankings-table th { position: sticky; top: 0; background: #2c3e50; color: white; padding: 8px 12px; text-align: left; z-index: 1; }
+        #rankings-table td { padding: 6px 12px; border-bottom: 1px solid #dcdde1; }
+        #rankings-table tr:hover td { background: #d5f5e3; cursor: pointer; }
+        #rankings-table .rank { text-align: right; padding-right: 10px; width: 40px; }
+        #rankings-table .station-id { font-family: monospace; font-size: 12px; }
+        #rankings-table .bar-cell { width: 100%; }
+        .bar-track { background: #ecf0f1; border-radius: 3px; height: 14px; min-width: 80px; overflow: hidden; }
+        .bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+        .bar-fill.low { background: #e74c3c; }
+        .bar-fill.mid { background: #f39c12; }
+        .bar-fill.high { background: #27ae60; }
+        .index-value { font-size: 11px; color: #7f8c8d; padding-left: 6px; white-space: nowrap; }
+        #rankings-title { padding: 15px 15px 8px 15px; font-size: 16px; background: #ecf0f1; border-bottom: 1px solid #dcdde1; }
+        .rankings-subtitle { padding: 4px 15px 8px 15px; background: #ecf0f1; border-bottom: 1px solid #dcdde1; font-size: 11px; color: #7f8c8d; }
+        .issue-card { background: white; border: 1px solid #dcdde1; border-radius: 6px; padding: 12px; margin-bottom: 10px; cursor: pointer; transition: all 0.2s; }
+        .issue-card:hover { border-color: #3498db; box-shadow: 0 2px 8px rgba(52,152,219,0.15); }
+        .issue-card.active { border-color: #e74c3c; background: #fdf0ef; box-shadow: 0 0 0 2px rgba(231,76,60,0.3); }
+        .issue-type { font-weight: 700; font-size: 14px; margin-bottom: 6px; color: #2c3e50; display: flex; align-items: center; gap: 6px; }
+        .severity-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+        .severity-dot.error { background: #e74c3c; }
+        .severity-dot.warning { background: #f1c40f; }
+        .severity-dot.information { background: #3498db; }
+        .issue-pathway { font-size: 12px; color: #7f8c8d; margin-bottom: 4px; }
+        .issue-stops { font-size: 12px; color: #7f8c8d; }
+        .issue-stops span { display: inline-block; background: #ecf0f1; padding: 2px 6px; border-radius: 3px; margin: 1px; font-family: monospace; font-size: 11px; }
+        .no-issues { color: #95a5a6; text-align: center; padding: 20px; font-style: italic; }
+        #map-container { flex: 1; position: relative; }
+        #map { width: 100%; height: 100%; }
+        #map .mapboxgl-popup { max-width: 300px !important; }
+        #map .mapboxgl-popup-content { font-size: 12px; line-height: 1.4; }
+        .custom-legend { position: absolute; bottom: 30px; right: 10px; z-index: 1000; background: white; padding: 10px; border-radius: 4px; box-shadow: 0 1px 5px rgba(0,0,0,0.2); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+        .legend-item { display: flex; align-items: center; gap: 6px; margin: 4px 0; font-size: 12px; }
+        .legend-color { width: 16px; height: 16px; border-radius: 50%; border: 2px solid #333; }
+        .error-banner { background: #e74c3c; color: white; padding: 12px 20px; text-align: center; flex-shrink: 0; }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h1>🚇 Pathway Issues Visualizer (Mapbox)</h1>
+        <select id="station-select">
+            <option value="">-- Select a station --</option>
+        </select>
+        <input type="text" id="station-search" placeholder="Search station by ID…" style="padding: 6px 10px; font-size: 14px; border-radius: 4px; border: none; min-width: 220px;" />
+        <span id="station-info" style="font-size: 13px; opacity: 0.8;"></span>
+    </div>
+    <div id="main">
+        <div id="issues-panel">
+            <h2 id="issues-panel-title">Issues</h2>
+            <div id="rankings-title" style="display:none;">📊 Station Accessibility Ranking</div>
+            <div class="rankings-subtitle" style="display:none;">Wheelchair-reachable platforms / total platforms</div>
+            <div id="severity-legend">
+                <span class="legend-entry"><span class="legend-dot error"></span> Error</span>
+                <span class="legend-entry"><span class="legend-dot warning"></span> Warning</span>
+            </div>
+            <div id="rankings-table" style="display:none;"><p class="no-issues">Loading rankings…</p></div>
+            <div id="issues-list"><p class="no-issues">Select a station to view issues.</p></div>
+        </div>
+        <div id="map-container">
+            <div id="map"></div>
+            <div class="custom-legend" id="legend">
+                <strong>Location Types</strong>
+                <div class="legend-item"><div class="legend-color" style="background:#3498db"></div> Platform</div>
+                <div class="legend-item"><div class="legend-color" style="background:#2ecc71"></div> Entrance/Exit</div>
+                <div class="legend-item"><div class="legend-color" style="background:#e67e22"></div> Node</div>
+                <div class="legend-item"><div class="legend-color" style="background:#e74c3c"></div> Boarding Area</div>
+                <div class="legend-item"><div class="legend-color" style="background:#9b59b6"></div> Exit</div>
+                <hr style="margin:6px 0">
+                <strong>Pathway Modes</strong>
+                <div class="legend-item">—— Walkway / Fare Gate / Move. Walkway / Exit Gate</div>
+                <div class="legend-item"><div class="legend-color" style="background:transparent; border-style:dashed; border-color:#e74c3c; border-radius:0"></div> Stairs / Escalator <span style="color:#999;font-size:10px">(dashed red, thick)</span></div>
+                <div class="legend-item"><div class="legend-color" style="background:#8e44ad"></div> Elevator <span style="color:#999;font-size:10px">(dashed purple)</span></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Mapbox token (fetched from the server, not hardcoded) ---
+        async function fetchMapboxToken() {
+            try {
+                const resp = await fetch('/mapbox-token', { cache: 'no-store' });
+                if (!resp.ok) {
+                    throw new Error(`Server returned ${resp.status}`);
+                }
+                const data = await resp.json();
+                if (!data.token) {
+                    throw new Error('No token in response');
+                }
+                mapboxgl.accessToken = data.token;
+            } catch (err) {
+                document.body.insertAdjacentHTML('afterbegin',
+                    `<div class="error-banner">Failed to load Mapbox token: ${err.message}. Set MAPBOX_KEY and start the server with serve_mapbox.py.</div>`);
+                throw err;
+            }
+        }
+
+        // --- Configuration ---
+        const STYLE_URL = 'mapbox://styles/mapbox/streets-v12';
+        const LOCATION_TYPE_COLORS = {
+            '0': '#3498db', // platform — blue
+            '1': '#95a5a6', // station — grey
+            '2': '#2ecc71', // entrance — green
+            '3': '#e67e22', // node/generic — orange
+            '4': '#e74c3c', // boarding area — red
+            '5': '#9b59b6'  // exit — purple
+        };
+        const LOCATION_TYPE_LABELS = {
+            '0': 'Platform',
+            '1': 'Station',
+            '2': 'Entrance/Exit',
+            '3': 'Node',
+            '4': 'Boarding Area',
+            '5': 'Exit'
+        };
+        const PATHWAY_MODE_LABELS = {
+            '1': 'Walkway',
+            '2': 'Stairs',
+            '3': 'Moving Walkway',
+            '4': 'Escalator',
+            '5': 'Elevator',
+            '6': 'Fare Gate',
+            '7': 'Exit Gate'
+        };
+
+        let currentStation = null;
+        let allStations = [];
+        let stationRanking = {}; // station_id -> accessibility index (f64)
+        let map;
+        let markersById = {};
+        let edgesData = [];
+        let stopEdgesMap = {}; // stopId → [edge_id, ...]
+        let activeIssue = null;
+        let activeStopId = null;
+        let preventMapClick = false;
+        let hoverPopup = null;
+
+        // Base filters for edge layers (used to restore after stop filtering)
+        const BASE_EDGE_FILTERS = {
+            'edges-regular': ['!', ['in', ['get', 'mode'], ['literal', ['2', '4', '5']]]],
+            'edges-stairs': ['in', ['get', 'mode'], ['literal', ['2', '4']]],
+            'edges-elevator': ['==', ['get', 'mode'], '5']
+        };
+
+        // --- Load data ---
+        async function loadData() {
+            try {
+                // Cache-busting: append timestamp to prevent stale cached data after re-runs
+                const ts = Date.now();
+                const [issuesResp, rankingResp] = await Promise.all([
+                    fetch(`stations_and_issues.json?t=${ts}`, { cache: 'no-store' }),
+                    fetch(`station_ranking.json?t=${ts}`, { cache: 'no-store' })
+                ]);
+                allStations = await issuesResp.json();
+
+                // station_ranking.json is optional — use empty object if missing
+                if (rankingResp.ok) {
+                    stationRanking = await rankingResp.json();
+                }
+
+                populateDropdown();
+                renderRankingsTable();
+                showRankingsView();
+            } catch (err) {
+                document.body.insertAdjacentHTML('afterbegin',
+                    `<div class="error-banner">Failed to load stations_and_issues.json: ${err.message}. Make sure the file is in the same directory.</div>`);
+            }
+        }
+
+        function populateDropdown() {
+            const select = document.getElementById('station-select');
+            allStations.forEach(station => {
+                const opt = document.createElement('option');
+                opt.value = station.station_id;
+                opt.textContent = `${station.station_id} (${station.pathway_issues.length} issues)`;
+                select.appendChild(opt);
+            });
+            select.addEventListener('change', onStationChange);
+
+            // Search functionality
+            const searchInput = document.getElementById('station-search');
+            let searchTimeout;
+            searchInput.addEventListener('input', () => {
+                clearTimeout(searchTimeout);
+                const query = searchInput.value.trim();
+                // Debounce: wait 300ms after user stops typing before searching
+                searchTimeout = setTimeout(() => {
+                    if (query === '') {
+                        searchInput.style.backgroundColor = '';
+                        return;
+                    }
+                    // Search for exact or partial station_id match
+                    const match = allStations.find(s => s.station_id === query)
+                        || allStations.find(s => s.station_id.toLowerCase().includes(query.toLowerCase()));
+                    if (match) {
+                        // Synchronize dropdown to matched station
+                        select.value = match.station_id;
+                        searchInput.style.backgroundColor = '#d5f5e3';
+                        onStationChange();
+                    } else {
+                        searchInput.style.backgroundColor = '#fadbd8';
+                    }
+                }, 300);
+            });
+
+            // Clear search highlight when dropdown is used manually
+            select.addEventListener('change', () => {
+                searchInput.style.backgroundColor = '';
+            });
+        }
+
+        function renderRankingsTable() {
+            const container = document.getElementById('rankings-table');
+            const entries = Object.entries(stationRanking);
+
+            if (entries.length === 0) {
+                container.innerHTML = '<p class="no-issues">No accessibility ranking data available.</p>';
+                return;
+            }
+
+            // Sort highest to lowest
+            entries.sort((a, b) => b[1] - a[1]);
+
+            const rows = entries.map(([stationId, index], i) => {
+                const pct = (index * 100).toFixed(1);
+                let barClass = 'low';
+                if (index >= 0.7) barClass = 'high';
+                else if (index >= 0.3) barClass = 'mid';
+                // Rank number: 1 = best (highest index)
+                const rank = entries.length - i;
+                return `<tr onclick="selectStationFromRanking('${stationId}')">
+                    <td class="rank">${rank}</td>
+                    <td class="station-id">${stationId}</td>
+                    <td class="bar-cell">
+                        <div class="bar-track"><div class="bar-fill ${barClass}" style="width:${pct}%"></div></div>
+                    </td>
+                    <td class="index-value">${pct}%</td>
+                </tr>`;
+            }).join('');
+
+            container.innerHTML = `<table>
+                <thead><tr><th>#</th><th>Station</th><th>Accessibility</th><th></th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>`;
+        }
+
+        function selectStationFromRanking(stationId) {
+            const select = document.getElementById('station-select');
+            select.value = stationId;
+            document.getElementById('station-search').value = '';
+            document.getElementById('station-search').style.backgroundColor = '';
+            onStationChange();
+        }
+
+        function showRankingsView() {
+            document.getElementById('issues-panel-title').style.display = 'none';
+            document.getElementById('severity-legend').style.display = 'none';
+            document.getElementById('issues-list').style.display = 'none';
+            document.getElementById('rankings-title').style.display = '';
+            document.getElementById('rankings-table').style.display = '';
+            document.querySelector('.rankings-subtitle').style.display = '';
+        }
+
+        function showIssuesView() {
+            document.getElementById('issues-panel-title').style.display = '';
+            document.getElementById('severity-legend').style.display = '';
+            document.getElementById('issues-list').style.display = '';
+            document.getElementById('rankings-title').style.display = 'none';
+            document.getElementById('rankings-table').style.display = 'none';
+            document.querySelector('.rankings-subtitle').style.display = 'none';
+        }
+
+        // --- Map initialization ---
+        function initMap() {
+            map = new mapboxgl.Map({
+                container: 'map',
+                style: STYLE_URL,
+                center: [7, 50],
+                zoom: 6
+            });
+
+            map.addControl(new mapboxgl.NavigationControl(), 'top-left');
+
+            map.on('load', () => {
+                // Add empty sources
+                map.addSource('stops', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+                map.addSource('edges', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+                map.addSource('highlights', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+
+                // Stops layer — circle markers colored by location_type
+                map.addLayer({
+                    id: 'stops',
+                    type: 'circle',
+                    source: 'stops',
+                    paint: {
+                        'circle-radius': [
+                            'match', ['get', 'location_type'],
+                            '0', 8,
+                            6
+                        ],
+                        'circle-color': ['get', 'color'],
+                        'circle-stroke-color': '#2c3e50',
+                        'circle-stroke-width': 2,
+                        'circle-stroke-opacity': 1,
+                        'circle-opacity': 0.85
+                    }
+                });
+
+                // Regular pathways (solid, dark, thin)
+                map.addLayer({
+                    id: 'edges-regular',
+                    type: 'line',
+                    source: 'edges',
+                    filter: ['!', ['in', ['get', 'mode'], ['literal', ['2', '4', '5']]]],
+                    paint: {
+                        'line-color': '#2c3e50',
+                        'line-width': 2,
+                        'line-opacity': 0.6
+                    }
+                });
+
+                // Stairs/escalator (dashed, red, thick)
+                map.addLayer({
+                    id: 'edges-stairs',
+                    type: 'line',
+                    source: 'edges',
+                    filter: ['in', ['get', 'mode'], ['literal', ['2', '4']]],
+                    paint: {
+                        'line-color': '#e74c3c',
+                        'line-width': 5,
+                        'line-opacity': 0.85,
+                        'line-dasharray': [8, 4]
+                    }
+                });
+
+                // Elevator (dashed, purple)
+                map.addLayer({
+                    id: 'edges-elevator',
+                    type: 'line',
+                    source: 'edges',
+                    filter: ['==', ['get', 'mode'], '5'],
+                    paint: {
+                        'line-color': '#8e44ad',
+                        'line-width': 3,
+                        'line-opacity': 0.85,
+                        'line-dasharray': [2, 6]
+                    }
+                });
+
+                // Highlights — stop rings
+                map.addLayer({
+                    id: 'highlights-stops',
+                    type: 'circle',
+                    source: 'highlights',
+                    filter: ['==', ['get', 'type'], 'stop'],
+                    paint: {
+                        'circle-radius': ['get', 'radius'],
+                        'circle-color': 'transparent',
+                        'circle-stroke-color': '#e74c3c',
+                        'circle-stroke-width': 3,
+                        'circle-stroke-opacity': 0.9
+                    }
+                });
+
+                // Highlights — pathway lines
+                map.addLayer({
+                    id: 'highlights-edges',
+                    type: 'line',
+                    source: 'highlights',
+                    filter: ['==', ['get', 'type'], 'edge'],
+                    paint: {
+                        'line-color': '#e74c3c',
+                        'line-width': 5,
+                        'line-opacity': 0.9
+                    }
+                });
+
+                // Hover popup (reused across all layers)
+                hoverPopup = new mapboxgl.Popup({
+                    closeButton: false,
+                    closeOnClick: false,
+                    offset: [0, -10]
+                });
+
+                // --- Marker hover: show tooltip ---
+                map.on('mouseenter', 'stops', (e) => {
+                    map.getCanvas().style.cursor = 'pointer';
+                    const props = e.features[0].properties;
+                    let html = `<b>${props.stop_id}</b><br>${props.stop_name}<br>${props.location_type_label}`;
+                    if (props.platform_code) html += ` · Code: ${props.platform_code}`;
+                    hoverPopup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+                });
+                map.on('mouseleave', 'stops', () => {
+                    map.getCanvas().style.cursor = '';
+                    hoverPopup.remove();
+                });
+
+                // --- Marker click: select / deselect stop, filter edges ---
+                map.on('click', 'stops', (e) => {
+                    preventMapClick = true;
+                    const props = e.features[0].properties;
+                    if (activeStopId === props.stop_id) {
+                        // Deselect
+                        activeStopId = null;
+                        showAllEdges();
+                    } else {
+                        activeStopId = props.stop_id;
+                        filterEdgesToStop(props.stop_id);
+                        // Zoom to this marker
+                        map.easeTo({ center: e.lngLat, zoom: 17 });
+                    }
+                });
+
+                // --- Edge hover: show tooltip ---
+                const edgeLayers = ['edges-regular', 'edges-stairs', 'edges-elevator'];
+                edgeLayers.forEach(layerId => {
+                    map.on('mouseenter', layerId, (e) => {
+                        map.getCanvas().style.cursor = 'pointer';
+                        const props = e.features[0].properties;
+                        let html = `<b>${props.edge_id}</b><br>${props.mode_label}`;
+                        if (props.length) html += `<br>Length: ${props.length}m`;
+                        if (props.actual_distance != null) html += `<br>Actual Distance: ${props.actual_distance}m`;
+                        if (props.traversal_time) html += `<br>Time: ${props.traversal_time}s`;
+                        if (props.signposted_as) html += `<br>→ ${props.signposted_as}`;
+                        if (props.max_slope != null) html += `<br>Max Slope: ${props.max_slope}`;
+                        hoverPopup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+                    });
+                    map.on('mouseleave', layerId, () => {
+                        map.getCanvas().style.cursor = '';
+                        hoverPopup.remove();
+                    });
+                });
+
+                // If a station was already selected when the map finished loading, render it
+                if (currentStation) {
+                    renderStation();
+                }
+            });
+
+            // Map click outside any marker → deselect stop/issue, show all edges
+            map.on('click', () => {
+                if (preventMapClick) {
+                    preventMapClick = false;
+                    return;
+                }
+                if (activeStopId !== null || activeIssue !== null) {
+                    activeStopId = null;
+                    activeIssue = null;
+                    document.querySelectorAll('.issue-card').forEach(c => c.classList.remove('active'));
+                    showAllEdges();
+                }
+            });
+        }
+
+        // --- Station change ---
+        function onStationChange() {
+            const stationId = document.getElementById('station-select').value;
+            if (!stationId) {
+                clearAll();
+                showRankingsView();
+                return;
+            }
+            showIssuesView();
+            currentStation = allStations.find(s => s.station_id === stationId);
+            if (!map) return;
+            if (map.isStyleLoaded()) {
+                renderStation();
+            } else {
+                // Map style hasn't loaded yet (e.g. still fetching token or tiles).
+                // Wait for the next idle event, then render — but only if the
+                // user hasn't switched to another station in the meantime.
+                map.once('idle', () => {
+                    if (currentStation && currentStation.station_id === stationId) {
+                        renderStation();
+                    }
+                });
+            }
+        }
+
+        function clearAll() {
+            markersById = {};
+            edgesData = [];
+            stopEdgesMap = {};
+            activeIssue = null;
+            activeStopId = null;
+            document.getElementById('issues-list').innerHTML = '<p class="no-issues">Select a station to view issues.</p>';
+            document.getElementById('station-info').textContent = '';
+
+            // Clear highlight source
+            if (map && map.getSource('highlights')) {
+                map.getSource('highlights').setData({ type: 'FeatureCollection', features: [] });
+            }
+        }
+
+        function renderStation() {
+            if (!currentStation || !map || !map.isStyleLoaded()) return;
+
+            // Clear previous
+            markersById = {};
+            edgesData = [];
+            stopEdgesMap = {};
+            activeIssue = null;
+            activeStopId = null;
+            if (map.getSource('highlights')) {
+                map.getSource('highlights').setData({ type: 'FeatureCollection', features: [] });
+            }
+
+            // Info
+            const foreignCount = currentStation.foreign_stops ? currentStation.foreign_stops.length : 0;
+            const info = document.getElementById('station-info');
+            info.textContent = `${currentStation.children.length} stops · ${currentStation.edges.length} pathways` +
+                (foreignCount > 0 ? ` · ${foreignCount} foreign stops` : '');
+
+            // Draw child stops as GeoJSON
+            drawChildren();
+
+            // Draw edges as GeoJSON
+            drawEdges();
+
+            // Fit bounds to include foreign stops
+            const allStops = [...currentStation.children];
+            if (currentStation.foreign_stops) allStops.push(...currentStation.foreign_stops);
+            const lats = allStops.map(c => parseFloat(c.stop_lat)).filter(v => !isNaN(v));
+            const lngs = allStops.map(c => parseFloat(c.stop_lon)).filter(v => !isNaN(v));
+            if (lats.length > 0 && lngs.length > 0) {
+                map.fitBounds(
+                    [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+                    { padding: 30, maxZoom: 17 }
+                );
+            }
+
+            // Render issues
+            renderIssues();
+        }
+
+        function drawChildren() {
+            const features = [];
+
+            currentStation.children.forEach(child => {
+                const lat = parseFloat(child.stop_lat);
+                const lon = parseFloat(child.stop_lon);
+                if (isNaN(lat) || isNaN(lon)) return;
+
+                const color = LOCATION_TYPE_COLORS[child.location_type] || '#7f8c8d';
+                const label = LOCATION_TYPE_LABELS[child.location_type] || `Type ${child.location_type}`;
+
+                features.push({
+                    type: 'Feature',
+                    geometry: { type: 'Point', coordinates: [lon, lat] },
+                    properties: {
+                        stop_id: child.stop_id,
+                        stop_name: child.stop_name,
+                        location_type: child.location_type,
+                        location_type_label: label,
+                        platform_code: child.platform_code || '',
+                        color: color
+                    }
+                });
+
+                // Store for edge drawing and other lookups
+                markersById[child.stop_id] = { lat, lon, stop: child };
+            });
+
+            // Draw foreign stops (stops from other stations involved in PathwayIncompatibleAncestor issues)
+            if (currentStation.foreign_stops) {
+                currentStation.foreign_stops.forEach(stop => {
+                    const lat = parseFloat(stop.stop_lat);
+                    const lon = parseFloat(stop.stop_lon);
+                    if (isNaN(lat) || isNaN(lon)) return;
+
+                    const color = LOCATION_TYPE_COLORS[stop.location_type] || '#7f8c8d';
+                    const label = (LOCATION_TYPE_LABELS[stop.location_type] || `Type ${stop.location_type}`) + ' (other station)';
+
+                    features.push({
+                        type: 'Feature',
+                        geometry: { type: 'Point', coordinates: [lon, lat] },
+                        properties: {
+                            stop_id: stop.stop_id,
+                            stop_name: stop.stop_name,
+                            location_type: stop.location_type,
+                            location_type_label: label,
+                            platform_code: stop.platform_code || '',
+                            color: color,
+                            is_foreign: true
+                        }
+                    });
+
+                    // Store for edge drawing
+                    markersById[stop.stop_id] = { lat, lon, stop };
+                });
+            }
+
+            map.getSource('stops').setData({ type: 'FeatureCollection', features });
+        }
+
+        // Haversine distance in meters between two lat/lon coordinates
+        function haversineDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371000; // Earth radius in meters
+            const toRad = deg => deg * Math.PI / 180;
+            const dLat = toRad(lat2 - lat1);
+            const dLon = toRad(lon2 - lon1);
+            const a = Math.sin(dLat / 2) ** 2 +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        }
+
+        // --- Overlap detection & curve perturbation ---
+
+        /**
+         * Creates a perturbed/curved line to avoid overlap with other lines
+         * Uses Turf.js bezierSpline for smooth curves
+         * @param {[number,number]} start - start coordinate [lon, lat]
+         * @param {[number,number]} end - end coordinate [lon, lat]
+         * @param {number} index - index of this line in the bundle (0-based)
+         * @param {number} total - total number of overlapping lines
+         * @returns {[number,number][]} array of coordinates forming the curved line
+         */
+        function createPerturbedLineCoords(start, end, index, total) {
+            // Only one line — no need to curve
+            if (total <= 1) return [start, end];
+
+            // Spread angle across all overlapping lines (in degrees)
+            const angle = -15 + (30 / (total - 1)) * index;
+
+            // Base offset in km
+            const bulgeDistKm = 0.002;
+
+            // Compute midpoint via turf
+            const lineLength = turf.distance(start, end, { units: 'kilometers' });
+
+            const oneThirdPoint = turf.along(
+                turf.lineString([start, end]),
+                lineLength / 3,
+                { units: 'kilometers' }
+            );
+
+            const twoThirdPoint = turf.along(
+                turf.lineString([start, end]),
+                2 * lineLength / 3,
+                { units: 'kilometers' }
+            );
+
+            // Offset both intermediate points sideways
+            const bulge1 = turf.destination(oneThirdPoint, bulgeDistKm, angle, { units: 'kilometers' });
+            const bulge2 = turf.destination(twoThirdPoint, bulgeDistKm, angle, { units: 'kilometers' });
+
+            const rawCoords = [
+                start,
+                bulge1.geometry.coordinates,
+                bulge2.geometry.coordinates,
+                end
+            ];
+
+            // Apply bezier spline for smooth curve
+            const curved = turf.bezierSpline(turf.lineString(rawCoords), { resolution: 100, sharpness: 1 });
+            return curved.geometry.coordinates;
+        }
+
+        /**
+         * Groups edges into bundles of overlapping links (connecting same node pair).
+         * @param {Array} allEdges - all edges from currentStation.edges
+         * @returns {Map<string, Array>} map of "sortedStopA|sortedStopB" -> array of edge objects
+         */
+        function groupOverlappingEdges(allEdges) {
+            const bundles = new Map(); // key = "stopA|stopB" (sorted) -> edges[]
+
+            allEdges.forEach(edge => {
+                const from = markersById[edge.from_stop_id];
+                const to = markersById[edge.to_stop_id];
+                if (!from || !to) return;
+
+                const nodes = [edge.from_stop_id, edge.to_stop_id].sort();
+                const key = nodes[0] + '|' + nodes[1];
+
+                if (!bundles.has(key)) {
+                    bundles.set(key, []);
+                }
+                bundles.get(key).push(edge);
+            });
+
+            return bundles;
+        }
+
+        function drawEdges() {
+            const features = [];
+            edgesData = [];
+            stopEdgesMap = {};
+
+            // Group overlapping edges (connect same two stops)
+            const bundles = groupOverlappingEdges(currentStation.edges);
+
+            bundles.forEach((bundleEdges) => {
+                const total = bundleEdges.length;
+
+                bundleEdges.forEach((edge, idx) => {
+                    const from = markersById[edge.from_stop_id];
+                    const to = markersById[edge.to_stop_id];
+                    if (!from || !to) return;
+
+                    // Generate geometry: curved if overlapping, straight otherwise
+                    const coords = createPerturbedLineCoords(
+                        [from.lon, from.lat],
+                        [to.lon, to.lat],
+                        idx,
+                        total
+                    );
+
+                    edgesData.push({
+                        edge_id: edge.id,
+                        from_stop_id: edge.from_stop_id,
+                        to_stop_id: edge.to_stop_id,
+                        coordinates: coords
+                    });
+
+                    // Build reverse map: stop → connected edge IDs
+                    if (!stopEdgesMap[edge.from_stop_id]) stopEdgesMap[edge.from_stop_id] = [];
+                    stopEdgesMap[edge.from_stop_id].push(edge.id);
+                    if (!stopEdgesMap[edge.to_stop_id]) stopEdgesMap[edge.to_stop_id] = [];
+                    stopEdgesMap[edge.to_stop_id].push(edge.id);
+
+                    const actualDistance = haversineDistance(from.lat, from.lon, to.lat, to.lon);
+
+                    features.push({
+                        type: 'Feature',
+                        geometry: {
+                            type: 'LineString',
+                            coordinates: coords
+                        },
+                        properties: {
+                            edge_id: edge.id,
+                            mode: edge.mode,
+                            mode_label: PATHWAY_MODE_LABELS[edge.mode] || `Mode ${edge.mode}`,
+                            length: edge.length || '',
+                            actual_distance: Math.round(actualDistance * 100) / 100,
+                            traversal_time: edge.traversal_time || '',
+                            signposted_as: edge.signposted_as || '',
+                            max_slope: edge.max_slope != null ? edge.max_slope : null
+                        }
+                    });
+                });
+            });
+
+            map.getSource('edges').setData({ type: 'FeatureCollection', features });
+            showAllEdges(); // Reset filters to defaults
+        }
+
+        function renderIssues() {
+            const container = document.getElementById('issues-list');
+            if (!currentStation.pathway_issues || currentStation.pathway_issues.length === 0) {
+                container.innerHTML = '<p class="no-issues">✅ No issues for this station.</p>';
+                return;
+            }
+
+            container.innerHTML = currentStation.pathway_issues.map((issue, idx) => {
+                const pathwayStr = issue.pathway_id
+                    ? `<div class="issue-pathway">Pathway: <code>${issue.pathway_id}</code></div>`
+                    : '';
+                const stopsStr = issue.involved_stop_ids && issue.involved_stop_ids.length > 0
+                    ? `<div class="issue-stops">Stops: ${issue.involved_stop_ids.map(id => `<span>${id}</span>`).join(' ')}</div>`
+                    : '';
+                const sev = issue.severity || 'Error';
+                const dotClass = sev.toLowerCase();
+                return `<div class="issue-card" data-index="${idx}" onclick="onIssueClick(${idx})">
+                    <div class="issue-type"><span class="severity-dot ${dotClass}"></span>${issue.issue_type}</div>
+                    ${pathwayStr}${stopsStr}
+                </div>`;
+            }).join('');
+        }
+
+        function onIssueClick(index) {
+            const issue = currentStation.pathway_issues[index];
+            if (!issue) return;
+
+            // Toggle active state
+            document.querySelectorAll('.issue-card').forEach(c => c.classList.remove('active'));
+            const card = document.querySelector(`.issue-card[data-index="${index}"]`);
+            if (card) card.classList.add('active');
+
+            const stopIdsToHighlight = new Set(issue.involved_stop_ids || []);
+            const pathwayIdToHighlight = issue.pathway_id;
+
+            // If we previously had this issue active, just deselect
+            if (activeIssue && activeIssue.index === index && activeIssue.stationId === currentStation.station_id) {
+                activeIssue = null;
+                document.querySelectorAll('.issue-card').forEach(c => c.classList.remove('active'));
+                map.getSource('highlights').setData({ type: 'FeatureCollection', features: [] });
+                showAllEdges();
+                return;
+            }
+            activeIssue = { index, stationId: currentStation.station_id };
+
+            // For PathwayIncompatibleAncestor issues: hide all pathways except the problem one
+            if (issue.issue_type === 'PathwayIncompatibleAncestor' && pathwayIdToHighlight) {
+                const filterExpr = ['==', ['get', 'edge_id'], pathwayIdToHighlight];
+                Object.entries(BASE_EDGE_FILTERS).forEach(([layerId, baseFilter]) => {
+                    map.setFilter(layerId, ['all', baseFilter, filterExpr]);
+                });
+            } else {
+                showAllEdges();
+            }
+
+            const highlightFeatures = [];
+
+            // Highlight involved stops
+            stopIdsToHighlight.forEach(stopId => {
+                const entry = markersById[stopId];
+                if (!entry) return;
+                highlightFeatures.push({
+                    type: 'Feature',
+                    geometry: { type: 'Point', coordinates: [entry.lon, entry.lat] },
+                    properties: {
+                        type: 'stop',
+                        radius: entry.stop.location_type === '0' ? 14 : 11,
+                        stop_id: stopId
+                    }
+                });
+            });
+
+            // Highlight relevant pathway (use curved coords if available)
+            if (pathwayIdToHighlight) {
+                const edgeData = edgesData.find(e => e.edge_id === pathwayIdToHighlight);
+                if (edgeData) {
+                    const highlightCoords = edgeData.coordinates
+                        && edgeData.coordinates.length > 0
+                        ? edgeData.coordinates
+                        : (() => {
+                            const f = markersById[edgeData.from_stop_id];
+                            const t = markersById[edgeData.to_stop_id];
+                            return (f && t) ? [[f.lon, f.lat], [t.lon, t.lat]] : null;
+                        })();
+                    if (highlightCoords) {
+                        highlightFeatures.push({
+                            type: 'Feature',
+                            geometry: { type: 'LineString', coordinates: highlightCoords },
+                            properties: { type: 'edge' }
+                        });
+                    }
+                }
+            }
+
+            map.getSource('highlights').setData({ type: 'FeatureCollection', features: highlightFeatures });
+
+            // Zoom to the involved stops
+            const involvedCoords = [];
+            stopIdsToHighlight.forEach(stopId => {
+                const entry = markersById[stopId];
+                if (entry) involvedCoords.push([entry.lon, entry.lat]);
+            });
+            if (involvedCoords.length > 0) {
+                const lngs = involvedCoords.map(c => c[0]);
+                const lats = involvedCoords.map(c => c[1]);
+                map.fitBounds(
+                    [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+                    { padding: 80, maxZoom: 17 }
+                );
+            }
+        }
+
+        // --- Pathway filtering by stop ---
+        function filterEdgesToStop(stopId) {
+            const connectedIds = stopEdgesMap[stopId] || [];
+            if (connectedIds.length === 0) return;
+
+            const filterExpr = ['in', ['get', 'edge_id'], ['literal', [...new Set(connectedIds)]]];
+
+            // Append the stop-filter to each layer's base filter
+            Object.entries(BASE_EDGE_FILTERS).forEach(([layerId, baseFilter]) => {
+                map.setFilter(layerId, ['all', baseFilter, filterExpr]);
+            });
+        }
+
+        function showAllEdges() {
+            // Restore base filters (no stop filtering)
+            Object.entries(BASE_EDGE_FILTERS).forEach(([layerId, baseFilter]) => {
+                map.setFilter(layerId, baseFilter);
+            });
+        }
+
+        // --- Startup ---
+        (async () => {
+            try {
+                await fetchMapboxToken();
+            } catch (err) {
+                return; // error banner already shown
+            }
+            loadData();
+            initMap();
+        })();
+    </script>
+</body>
+</html>
