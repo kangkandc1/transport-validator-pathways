@@ -150,9 +150,11 @@
         // --- Load data ---
         async function loadData() {
             try {
+                // Cache-busting: append timestamp to prevent stale cached data after re-runs
+                const ts = Date.now();
                 const [issuesResp, rankingResp] = await Promise.all([
-                    fetch('stations_and_issues.json'),
-                    fetch('station_ranking.json')
+                    fetch(`stations_and_issues.json?t=${ts}`, { cache: 'no-store' }),
+                    fetch(`station_ranking.json?t=${ts}`, { cache: 'no-store' })
                 ]);
                 allStations = await issuesResp.json();
 
