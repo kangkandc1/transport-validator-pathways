@@ -56,13 +56,10 @@ The easiest way to run the validator is to carry out the validation of an unzipp
 The following steps are optimal
 ```bash
 cargo build --release 
-run_and_visualize_mapbox.sh <path_to_gtfs_feed>
+run_and_visualize.sh <path_to_gtfs_feed>
 ```
 
-This will launch the visualizer at port 8999. The visualizer requires an environment variable MAPBOX_KEY to be set with the value of a valid mapbox token.  Please note that visualizer is not a core functionality 
-of the fork. The main restriction in making it a core functionality is the availability of a truly open
-vector tile service that covers the entire world.
-
+This will launch the visualizer at port 8999. 
 ### Benchmarking
 
 Validating the Verkehrsverbund Berlin-Brandenburg GTFS Feed (https://mobilitydatabase.org/feeds/gtfs/mdb-3233) with 42000 stops and over 120,000 pathways
